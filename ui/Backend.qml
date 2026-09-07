@@ -59,6 +59,9 @@ Item {
     property int thumbRequests: 0
     // Same gate, for dirsize: a fling must issue none of these either.
     property int dirSizeRequests: 0
+    // Same idiom again, for the watched re-read: a debt owed by the directory the pane has left must
+    // cost the one it arrived in no listing at all, which only a count can say; see tests/ui.sh watch.
+    property int listRequests: 0
 
     // A write before the child is spawned is dropped silently, so an early request waits here.
     property var pending: []
@@ -82,6 +85,7 @@ Item {
     }
 
     function list(path, first, hidden) {
+        root.listRequests += 1
         // A fresh scan is always name ascending, so every refresh after a write operation puts the
         // header's mark back rather than leaving it describing the order before the refresh.
         root.sortBy = "name"

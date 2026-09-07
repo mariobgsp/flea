@@ -891,15 +891,18 @@ that wants the new directory sends `list` again. `path` is the watched directory
 has navigated since the notification was written can tell it is not about the folder it is on now,
 and drop it.
 
-A successful `list` starts watching its path and stops watching the previous one. `search` and
-`listpaths` both stop watching, because a set of matches and a set of named paths are not
-directories. A failed `list` changes nothing, so the directory that is still listed is still the
-one being watched.
+A `list` starts watching its path **before it reads the directory**, not after, because a change
+landing while the read runs is missing from the rows that `list` is about to answer with and is
+therefore exactly the change the client has to be told about. A `list` that then fails to scan puts
+the watch back on the directory that is still listed, so a refused path never costs the open one its
+watch. `search` and `listpaths` both stop watching, because a set of matches and a set of named
+paths are not directories.
 
 The mechanism is one inotify watch on that one directory, non-recursive, with the mask
-`IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_DELETE_SELF |
-IN_MOVE_SELF`, which is exactly the set of events that changes what a listing says: which names are
-in it, and the size, date and mode its columns draw. **A file growing under an open handle is not
+`IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_MOVE_SELF`,
+which is exactly the set of events that changes what a listing says: which names are in it, and the
+size, date and mode its columns draw. Deleting the watched directory needs no bit of its own: the
+kernel removes the watch along with it and reports that removal whatever the mask holds. **A file growing under an open handle is not
 one of them.** `IN_MODIFY` fires on every `write(2)` and a listing does not draw a partial size, so
 a row's size follows the writer closing the file rather than the writer writing to it.
 
@@ -910,8 +913,10 @@ drops in that window costs nothing, because every event in a burst says the same
 that re-reads the whole directory anyway.
 
 `--backend` on a box whose inotify instance limit is exhausted prints one sentence to stderr at
-startup and then never sends this line; every other request answers exactly as before. A client
-must therefore treat a live listing as an improvement it may not get, not as a guarantee. A
+startup and then never sends this line, and a `list` whose directory the kernel refuses a watch on
+(`max_user_watches`, most often) prints one naming that directory; every other request answers
+exactly as before. A client must therefore treat a live listing as an improvement it may not get,
+not as a guarantee. A
 network mount is the other case: inotify sees the local kernel's own view of a directory, so a
 change another machine makes to an NFS or SMB share is not delivered, and Flea is stale there in
 exactly the way it was before this line existed.

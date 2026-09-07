@@ -1923,7 +1923,6 @@ case_watch() {
     rm "$dir/beta.txt"
     mkdir "$dir/brand-new-folder"
     # The 400 ms settle plus the re-read; the reporter waited several seconds and saw nothing move.
-    # Four rows now: brand-new-folder, NEWFILE-appeared.txt, alpha-RENAMED.txt, preview-me.txt.
     omarchy-drive wait ipc -p "$flea_ui" flea total 4 --timeout 15 >/dev/null \
         || fail "watch: the listing stayed at $(ipc total) rows after four outside changes"
     settle
@@ -1968,6 +1967,46 @@ case_watch() {
     omarchy-drive wait ipc -p "$flea_ui" flea total 6 --timeout 15 >/dev/null \
         || fail "watch: clearing the selection did not run the owed re-read, total is $(ipc total)"
     printf 'WATCH deferred=ok paid=ok total=%s\n' "$(ipc total)"
+
+    # A directory under continuous writing still has to settle. The timer absorbs notifications rather
+    # than being restarted by them, so the sample that matters is taken WHILE the writing is still
+    # going: a restart() is pushed forward by every notification and re-reads nothing until the writer
+    # stops, which a sample taken afterwards cannot tell apart from a timer that fired all along.
+    local before during writer n
+    before=$(ipc total)
+    ( for n in $(seq 1 40); do
+          printf 'x\n' > "$dir/stream-$n.txt"
+          sleep 0.1
+      done ) &
+    writer=$!
+    sleep 1.2
+    during=$(ipc total)
+    wait "$writer"
+    printf 'WATCH stream before=%s during=%s after=%s\n' "$before" "$during" "$(ipc total)"
+    (( during > before )) \
+        || fail "watch: nothing re-read while the directory was still being written, total stayed $before"
+
+    # A debt owed by this directory must not be paid by re-listing the next one. The selection is what
+    # holds the debt, and leaving clears that selection, so without the guard the owed re-read fires
+    # against whatever the pane has just opened.
+    key v >/dev/null
+    settle
+    printf 'owed\n' > "$dir/CCC-owed-on-leaving.txt"
+    sleep 0.5
+    # Counted from before the navigation, not from after it: the owed re-read lands about 400 ms after
+    # the selection clears, which is inside wait_path's own polling, so a sample taken on arrival has
+    # already counted it and could never tell the two apart.
+    local before_nav after_nav
+    before_nav=$(ipc listRequests)
+    key -k Backspace >/dev/null
+    wait_path "$fixture_root"
+    sleep 1.5
+    after_nav=$(ipc listRequests)
+    printf 'WATCH carried lists %s to %s, one navigation and nothing else\n' "$before_nav" "$after_nav"
+    (( after_nav == before_nav + 1 )) \
+        || fail "watch: leaving cost $(( after_nav - before_nav )) listings, so a debt owed for the directory just left was paid by the one the pane moved to"
+    key -k Escape >/dev/null
+    settle
     assert_window
     kill_flea
 }

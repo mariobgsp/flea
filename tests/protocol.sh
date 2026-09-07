@@ -514,8 +514,11 @@ out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
 check_changed "a change in the directory just left answers nothing" "$out" 0 0
 check "and moving to a new directory answers nothing on its own" "2" "$(echo "$out" | grep -c '"t":"listed"')"
 
-# A search replaces the listing with matches, which are not a directory, so nothing is watched.
-out=$( ( printf '{"c":"search","path":"%s","query":"alpha"}\n' "$WT"
+# A search replaces the listing with matches, which are not a directory, so nothing is watched. The
+# list comes first on purpose: without a watch to stop, this case passes with the stop deleted.
+out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
+         sleep 0.4
+         printf '{"c":"search","path":"%s","query":"alpha"}\n' "$WT"
          sleep 0.6
          touch "$WT/during-search.txt"
          sleep 0.6
@@ -531,6 +534,31 @@ out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
          sleep 0.6
          printf '{"c":"quit"}\n' ) | $BIN --backend)
 check_changed "a change under listpaths answers nothing, because named paths are not a directory" "$out" 0 0
+
+# One bit of MASK each, isolated: a chmod is IN_ATTRIB alone, and appending to a file that already
+# exists is IN_CLOSE_WRITE alone, since IN_MODIFY is deliberately not in the mask.
+append_to_alpha() {
+  printf 'x' >> "$WT/alpha.txt"
+}
+
+out=$(watch_run "$WT" chmod 0640 "$WT/alpha.txt")
+check_changed "a chmod from outside answers a changed line" "$out" 1 3
+chmod 0644 "$WT/alpha.txt"
+
+out=$(watch_run "$WT" append_to_alpha)
+check_changed "a writer closing a file it appended to answers a changed line" "$out" 1 3
+
+# The watched directory itself: a move keeps the watch, which IN_MOVE_SELF is what reports, and a
+# delete takes the watch with it, which the kernel reports as IN_IGNORED whatever the mask holds.
+SELFDIR="$WT_SB/self-move"
+mkdir -p "$SELFDIR"
+out=$(watch_run "$SELFDIR" mv "$SELFDIR" "$WT_SB/self-moved")
+check_changed "moving the watched directory itself answers a changed line" "$out" 1 3
+
+SELFDEL="$WT_SB/self-delete"
+mkdir -p "$SELFDEL"
+out=$(watch_run "$SELFDEL" rmdir "$SELFDEL")
+check_changed "deleting the watched directory answers a changed line, from the watch's own removal" "$out" 1 3
 
 # A burst is coalesced by the reader, so a hundred creates cost a handful of lines, not a hundred.
 out=$(watch_run "$WT" burst_of_creates)

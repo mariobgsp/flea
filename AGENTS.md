@@ -138,8 +138,11 @@ Issue 68: a folder open in Flea did not follow a create, rename or delete made b
 so a window kept open beside a terminal drew whatever was true when it was opened.
 
 **The backend watches, the client re-reads.** `backend/watch.rs` holds one non-recursive inotify
-watch on `st.base`, moved by every successful `list` and dropped by `search` and `listpaths`, whose
-listings are not directories. Its reader thread sends the loop an `Event::Changed(wd)`, and the loop
+watch on the directory being listed, armed by `list` BEFORE the scan and dropped by `search` and
+`listpaths`, whose listings are not directories. Arming after the scan lost every change the scan
+itself raced, a hole the width of one readdir: reproduced on the 100,000 file fixture, where a
+create during the scan answered no `changed` line at all and the same create a second later
+answered one. A `list` that fails to scan puts the watch back on the directory still on screen. Its reader thread sends the loop an `Event::Changed(wd)`, and the loop
 answers `{"t":"changed","path":"<the directory>"}` and changes nothing else: the rows, the count and
 the sort order stay exactly what they were, because the client is the only thing that knows whether
 it still wants them. See `docs/protocol.md` "changed" for the mask and the coalescing.

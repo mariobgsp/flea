@@ -3,6 +3,7 @@
 // poll because a poll wakes this process forever to learn that nothing happened.
 use crate::backend::events::Event;
 use crate::json::escape;
+use std::io;
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::path::Path;
 use std::sync::mpsc::Sender;
@@ -17,7 +18,8 @@ const IN_MOVED_FROM: u32 = 0x0000_0040;
 const IN_MOVED_TO: u32 = 0x0000_0080;
 const IN_CREATE: u32 = 0x0000_0100;
 const IN_DELETE: u32 = 0x0000_0200;
-const IN_DELETE_SELF: u32 = 0x0000_0400;
+// Not IN_DELETE_SELF: the kernel removes the watch with the directory and sends IN_IGNORED whatever
+// the mask says, so the bit was measured to change nothing and the removal is the event.
 const IN_MOVE_SELF: u32 = 0x0000_0800;
 const MASK: u32 = IN_ATTRIB
     | IN_CLOSE_WRITE
@@ -25,7 +27,6 @@ const MASK: u32 = IN_ATTRIB
     | IN_MOVED_TO
     | IN_CREATE
     | IN_DELETE
-    | IN_DELETE_SELF
     | IN_MOVE_SELF;
 
 // IN_CLOEXEC is O_CLOEXEC, so no thumbnailer child inherits this descriptor.
@@ -35,8 +36,8 @@ const EVENT_HEADER: usize = 16;
 // Every event in one burst says the same thing to a client that re-reads the whole directory, so the
 // thread pauses after a burst and a thousand writes cost one line instead of a thousand.
 const COALESCE: Duration = Duration::from_millis(100);
-// A burst larger than this overflows in the kernel, which costs nothing here: the payload is only
-// ever read for its watch descriptor, never for which file moved.
+// A batch size and not a limit: one read takes whole events only and leaves the rest queued for the
+// next one, and the kernel's own drop happens at max_queued_events, which this does not bound.
 const BUF: usize = 8192;
 
 extern "C" {
@@ -88,6 +89,12 @@ impl Watch {
         self.wd = -1;
     }
 
+    // Whether a directory is being followed right now, which src/backend/run.rs reports on once the
+    // listing it belongs to succeeded; a refusal before that belongs to a path that was never listed.
+    pub fn watching(&self) -> bool {
+        self.wd >= 0
+    }
+
     // A removed watch's own IN_IGNORED is delivered after inotify_rm_watch returns, so a burst is
     // this directory's only while its descriptor still matches; without this every navigation would
     // answer one changed line for the directory it had just arrived in.
@@ -102,8 +109,16 @@ fn pump(fd: c_int, tx: Sender<Event>) {
     let mut buf = [0u8; BUF];
     loop {
         let n = unsafe { read(fd, buf.as_mut_ptr() as *mut c_void, BUF) };
-        // A closed or broken descriptor ends the thread; the loop keeps running without a watch.
-        if n <= 0 {
+        if n < 0 {
+            // A signal can cut a blocking read short, which is not the descriptor going away.
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            eprintln!("flea: the open folder stopped following outside changes, the inotify read failed");
+            return;
+        }
+        // A closed descriptor ends the thread; the loop keeps running without a watch.
+        if n == 0 {
             return;
         }
         for wd in descriptors(&buf[..n as usize]) {
@@ -126,12 +141,9 @@ fn descriptors(buf: &[u8]) -> Vec<i32> {
         if !out.contains(&wd) {
             out.push(wd);
         }
-        let step = EVENT_HEADER + len;
-        // A truncated tail is not a header, so it ends the walk rather than being read past the end.
-        if step > buf.len() - at {
-            break;
-        }
-        at += step;
+        // A tail too short to hold another header ends the walk, which is also what stops a truncated
+        // one being read past the end: at overshoots and the condition above is what refuses it.
+        at += EVENT_HEADER + len;
     }
     out
 }
@@ -171,7 +183,7 @@ mod tests {
         assert_eq!(descriptors(&buf), vec![3, 4]);
     }
 
-    // A read can end mid-event; the walk stops there rather than reading a length past the buffer.
+    // A read can end mid-event: the last complete header is still named and nothing is read past the end.
     #[test]
     fn a_truncated_tail_ends_the_walk() {
         let mut buf = event(3, b"a.txt\0\0\0");

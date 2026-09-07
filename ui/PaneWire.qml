@@ -84,6 +84,16 @@ Item {
         onTriggered: root.reread()
     }
 
+    // A debt owed for the directory the pane has left is not owed by the one it arrived in: without
+    // this, a change in A held back by a selection is paid by a full re-list of B.
+    Connections {
+        target: pane
+        function onPathChanged() {
+            root.stale = false
+            watchSettle.stop()
+        }
+    }
+
     // Only when the cursor really landed on the folder that was made: on a listing wider than the
     // window the refresh may not hold that row at all, and ui/RenameField.qml lives in ui/Row.qml
     // alone, so the other two views would arm an editor nothing draws and never disarm it.

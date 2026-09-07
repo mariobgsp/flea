@@ -201,6 +201,7 @@ QtObject {
         function visibleRows(): int { return root.pane.visibleRows }
         function thumbRequests(): int { return root.backend.thumbRequests }
         function dirSizeRequests(): int { return root.backend.dirSizeRequests }
+        function listRequests(): int { return root.backend.listRequests }
         function thumbFile(i: int): string { return root.pane.thumbFor(i) }
         function rowCentre(i: int): string { return root.pane.rowFor(i) ? root.fleaWindow.centreOf(root.pane.visibleItemFor(i)) : "" }
         // The same lookup as rowCentre, but for the preview's own seek slider, so a test can drive

@@ -35,7 +35,7 @@ use crate::heap;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -162,20 +162,28 @@ fn handle_line(
             if finish_search(out, st, true) {
                 forget_rows(st, pool);
             }
+            // Before the scan and not after it: a change landing while readdir runs is missing from the
+            // rows this answers with, so it is exactly the change the client has to be told about.
+            watch.follow(Path::new(&path));
             match scan(&path, hidden) {
                 Ok((mut l, read_ms)) => {
                     let sort_ms = sort_by_name(&mut l, false);
                     // base and listing only move together, so a failed list cannot mix them.
                     st.base = PathBuf::from(&path);
                     st.listing = l;
-                    // The listing moved, so the watch moves with it, before any reply names it.
-                    watch.follow(&st.base);
                     forget_rows(st, pool);
+                    // Said once per listing that got one, because a directory nobody can watch is a
+                    // directory that goes stale in silence; see docs/protocol.md "changed".
+                    if !watch.watching() {
+                        eprintln!("flea: {} will not follow outside changes, inotify refused a watch on it", path);
+                    }
                     writeln!(out, "{}", listed_line(st.listing.len(), read_ms, sort_ms, dev_of(&st.base))).ok();
                     // Rides along unasked: asking costs a 60 ms round trip at first paint.
                     write_window(out, st, 0, first, tb);
                 }
                 Err(e) => {
+                    // The listing did not move, so the watch goes back to the directory still on screen.
+                    watch.follow(&st.base);
                     // A typed path reaches the denial with no parent row to remember the mode from,
                     // so the stat that survives the refused read is the pane's only source for it.
                     writeln!(out, "{}", error_line_with_mode(&e, mode_of(&path))).ok();

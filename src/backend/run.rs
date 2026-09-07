@@ -162,9 +162,8 @@ fn handle_line(
             if finish_search(out, st, true) {
                 forget_rows(st, pool);
             }
-            // Before the scan and beside the current watch, not in place of it: a change landing while
-            // readdir runs is missing from the rows this answers with, and a scan that fails must not
-            // cost the directory still on screen the descriptor its own events carry.
+            // Beside the current watch and before the scan: a change readdir raced is missing from the
+            // rows this answers with, and a failed scan must not cost the open folder its descriptor.
             watch.begin(Path::new(&path));
             match scan(&path, hidden) {
                 Ok((mut l, read_ms)) => {

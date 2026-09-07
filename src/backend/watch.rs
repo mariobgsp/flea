@@ -75,9 +75,13 @@ impl Watch {
         self.incoming = self.add(path);
     }
 
-    // The new listing replaced the old, so the directory it replaced stops being watched.
+    // The new listing replaced the old, so the directory it replaced stops being watched. A re-list of
+    // the SAME directory answers the descriptor it already had, so dropping it here would remove the
+    // watch this just re-armed and leave the folder followed by nothing.
     pub fn commit(&mut self) {
-        self.drop_one(self.wd);
+        if self.incoming != self.wd {
+            self.drop_one(self.wd);
+        }
         self.wd = self.incoming;
         self.incoming = -1;
     }
@@ -90,7 +94,9 @@ impl Watch {
 
     pub fn stop(&mut self) {
         self.drop_one(self.wd);
-        self.drop_one(self.incoming);
+        if self.incoming != self.wd {
+            self.drop_one(self.incoming);
+        }
         self.wd = -1;
         self.incoming = -1;
     }
@@ -229,15 +235,14 @@ mod tests {
         assert!(!w.is_current(1));
     }
 
-    // A scan that fails leaves the listed directory on the descriptor it already had, which is the
-    // whole point of arming the next one beside it rather than in place of it.
+    // These build a Watch with no descriptor, so add and drop_one are no-ops: what they pin is which
+    // descriptor the bookkeeping calls current, and tests/protocol.sh pins what the syscalls do.
     #[test]
     fn an_abandoned_scan_leaves_the_current_watch_alone() {
         let mut w = Watch { fd: -1, wd: 7, incoming: -1 };
         w.begin(Path::new("/tmp"));
         w.abandon();
         assert!(w.is_current(7));
-        assert!(!w.refused());
     }
 
     // And one that succeeds hands the listing over to the descriptor the scan was armed with.

@@ -5964,21 +5964,26 @@ settings_menu_lacks() {
         || fail "settings: $label is still in the menu, got $(ipc contextMenuEntries)"
 }
 
-# The Mac/Windows toggle, proved by the keys themselves: a chord one preset binds and the other
+# The Default/Windows toggle, proved by the keys themselves: a chord one preset binds and the other
 # does not, driven through the real window in both states.
 settings_keys() {
     key , >/dev/null
     settle
     settings_section keys
-    [[ "$(ipc settingsRows)" == *"choice|Keybinding preset|Mac"* ]] \
-        || fail "settings: the preset row does not start on Mac, got $(ipc settingsRows)"
-    [[ "$(ipc settingsRows)" == *"fact|connect to server|ctrl-k"* ]] \
-        || fail "settings: the Mac preset lists none of its own chords"
+    # The shipped preset is "default", which ui/js/Settings.js labels Default and PRESET_KEYS gives
+    # ctrl-1 to ctrl-3; a window that starts anywhere else is not the one this checks the toggle on.
+    [[ "$(ipc settingsRows)" == *"choice|Keybinding preset|Default"* ]] \
+        || fail "settings: the preset row does not start on Default, got $(ipc settingsRows)"
+    [[ "$(ipc settingsRows)" == *"fact|list view|ctrl-1"* ]] \
+        || fail "settings: the Default preset lists none of its own chords"
     shot settings-keys
+    # PRESETS is default, vim, mac, windows, so Windows is three steps along and not one.
+    key l >/dev/null
+    key l >/dev/null
     key l >/dev/null
     settle
     [[ "$(ipc settingsRows)" == *"choice|Keybinding preset|Windows"* ]] \
-        || fail "settings: l did not step the preset to Windows"
+        || fail "settings: three steps of l did not reach Windows"
     [[ "$(ipc settingsRows)" == *"fact|hidden files|ctrl-h"* ]] \
         || fail "settings: the Windows preset lists none of its own chords"
     key -k Escape >/dev/null

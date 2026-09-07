@@ -162,8 +162,7 @@ fn handle_line(
             if finish_search(out, st, true) {
                 forget_rows(st, pool);
             }
-            // Beside the current watch and before the scan: a change readdir raced is missing from the
-            // rows this answers with, and a failed scan must not cost the open folder its descriptor.
+            // Before the scan, because a change readdir raced is missing from the rows this answers with.
             watch.begin(Path::new(&path));
             match scan(&path, hidden) {
                 Ok((mut l, read_ms)) => {
@@ -173,8 +172,7 @@ fn handle_line(
                     st.listing = l;
                     watch.commit();
                     forget_rows(st, pool);
-                    // Said once per listing, because a directory nobody can watch goes stale in
-                    // silence; see docs/protocol.md "changed".
+                    // Said once per listing, because a folder nobody can watch goes stale in silence.
                     if watch.refused() {
                         eprintln!("flea: {} will not follow outside changes, inotify refused a watch on it", path);
                     }

@@ -121,7 +121,7 @@ function refreshWatched(pane) {
     var row = pane.rowFor(pane.cursorIndex)
     // The path rides along because the anchor can outlive one rows reply: a navigation between the
     // two below would otherwise put this directory's cursor row onto the next directory's listing.
-    var anchor = { name: row ? String(row.n) : "", index: pane.cursorIndex, start: pane.held, path: pane.path }
+    var anchor = { name: row ? String(row.n) : "", index: pane.cursorIndex, start: pane.held, path: pane.path, waited: false }
     var query = pane.filterQuery
     pane.openWithoutHistory(pane.path)
     // A filter narrows the rows the pane holds rather than choosing which directory it holds, so it
@@ -151,7 +151,10 @@ function applyAnchor(pane, anchor) {
             return null
         }
     }
-    if (anchor.start > 0 && pane.held === 0) {
+    // One reply's grace for the window asked for above, and no more: a listing that shrank below that
+    // offset comes back clamped to row 0, which is not the reply still being waited for.
+    if (anchor.start > 0 && pane.held === 0 && !anchor.waited) {
+        anchor.waited = true
         return anchor
     }
     if (pane.total > 0) {

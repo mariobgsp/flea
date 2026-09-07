@@ -560,8 +560,7 @@ mkdir -p "$SELFDEL"
 out=$(watch_run "$SELFDEL" rmdir "$SELFDEL")
 check_changed "deleting the watched directory answers a changed line, from the watch's own removal" "$out" 1 3
 
-# A failed list answers its error and leaves the watch on the directory still being shown; deleting
-# the Err arm's abandon, so the failure takes that watch away, reddens the change that follows.
+# A failed list answers its error and the directory still on screen keeps answering changed.
 out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
          sleep 0.4
          printf '{"c":"list","path":"/no/such/directory","first":10}\n'
@@ -572,8 +571,7 @@ out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
 check "a failed list still answers its error" "1" "$(echo "$out" | grep -c '"t":"error"')"
 check_changed "and the directory still on screen is still watched after it" "$out" 1 3
 
-# Every refresh re-lists the same directory, and inotify answers the descriptor it already holds, so
-# a commit that dropped the old one would remove the watch it just re-armed.
+# inotify answers the descriptor it already holds, so a commit that dropped it would unwatch the folder.
 out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
          sleep 0.5
          printf '{"c":"list","path":"%s","first":10}\n' "$WT"
@@ -581,14 +579,18 @@ out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
          printf '{"c":"quit"}\n' ) | $BIN --backend)
 check_changed "re-listing the same directory answers nothing on its own" "$out" 0 0
 
+# Two changes, a second apart so each is its own burst: a dead watch answers the one spurious line
+# its own removal made and nothing else, which one change alone could not be told apart from.
 out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
          sleep 0.5
          printf '{"c":"list","path":"%s","first":10}\n' "$WT"
          sleep 0.5
-         touch "$WT/after-a-relist.txt"
+         touch "$WT/after-a-relist-one.txt"
+         sleep 1.0
+         touch "$WT/after-a-relist-two.txt"
          sleep 0.8
          printf '{"c":"quit"}\n' ) | $BIN --backend)
-check_changed "and a change after that re-list is still answered" "$out" 1 3
+check_changed "and two changes after that re-list are both answered" "$out" 2 4
 
 # A burst is coalesced by the reader, so a hundred creates cost a handful of lines, not a hundred.
 out=$(watch_run "$WT" burst_of_creates)

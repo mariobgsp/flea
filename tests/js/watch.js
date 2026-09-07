@@ -102,6 +102,17 @@ function run(check) {
     check("and the first window, which cannot hold that name, does not resolve the anchor",
           Nav.applyAnchor(deep, deepAnchor) === deepAnchor, true)
     check("and moves no cursor while it waits", deep.cursorSetTo, -1)
+    // One reply's grace and no more: a listing that shrank below that offset comes back clamped to
+    // row 0, and waiting on it for ever would leave the cursor unrestored and the anchor leaking.
+    var clamped = watched(4000, [{ n: "m" }], 4001, 100000)
+    var clampedAnchor = Nav.refreshWatched(clamped)
+    clamped.held = 0
+    clamped.rows = [{ n: "a" }]
+    clamped.total = 1
+    check("a window clamped to row 0 is given one reply's grace",
+          Nav.applyAnchor(clamped, clampedAnchor) === clampedAnchor, true)
+    check("and then resolves against the clamp rather than waiting for ever",
+          Nav.applyAnchor(clamped, clampedAnchor) + "|" + clamped.cursorSetTo, "null|0")
     deep.held = 4000
     deep.rows = [{ n: "m" }, { n: "n" }]
     check("the window it asked for is what puts the cursor back",

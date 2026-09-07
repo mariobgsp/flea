@@ -90,6 +90,7 @@ Item {
         target: pane
         function onPathChanged() {
             root.stale = false
+            root.anchor = null
             watchSettle.stop()
         }
     }

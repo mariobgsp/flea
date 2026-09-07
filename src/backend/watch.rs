@@ -1,6 +1,4 @@
-// The directory the current listing came from, watched so a change another program makes reaches the
-// client without the user leaving the folder; see docs/protocol.md "changed". inotify rather than a
-// poll because a poll wakes this process forever to learn that nothing happened.
+// The listed directory, watched so an outside change reaches the client; see docs/protocol.md.
 use crate::backend::events::Event;
 use crate::json::escape;
 use std::io;
@@ -10,16 +8,14 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
-// Exactly the events that change what a listing says: which names are in it, and the size, date and
-// mode its columns draw. A file growing under an open handle is not one of them, see AGENTS.md.
+// Exactly the events that change what a listing draws; a file still being written is not one.
 const IN_ATTRIB: u32 = 0x0000_0004;
 const IN_CLOSE_WRITE: u32 = 0x0000_0008;
 const IN_MOVED_FROM: u32 = 0x0000_0040;
 const IN_MOVED_TO: u32 = 0x0000_0080;
 const IN_CREATE: u32 = 0x0000_0100;
 const IN_DELETE: u32 = 0x0000_0200;
-// Not IN_DELETE_SELF: the kernel removes the watch with the directory and sends IN_IGNORED whatever
-// the mask says, so the bit was measured to change nothing and the removal is the event.
+// Not IN_DELETE_SELF: the watch's own removal is reported whatever the mask holds, measured.
 const IN_MOVE_SELF: u32 = 0x0000_0800;
 const MASK: u32 = IN_ATTRIB
     | IN_CLOSE_WRITE
@@ -33,11 +29,9 @@ const MASK: u32 = IN_ATTRIB
 const IN_CLOEXEC: c_int = 0x0008_0000;
 // One inotify_event is a watch descriptor, a mask, a cookie and a name length, then the name.
 const EVENT_HEADER: usize = 16;
-// Every event in one burst says the same thing to a client that re-reads the whole directory, so the
-// thread pauses after a burst and a thousand writes cost one line instead of a thousand.
+// One burst says one thing to a client that re-reads it all, so a thousand writes cost one line.
 const COALESCE: Duration = Duration::from_millis(100);
-// A batch size and not a limit: a read takes whole events only and leaves the rest queued for the
-// next one, and the kernel's own drop happens at max_queued_events, which this does not bound.
+// A batch size and not a limit: the kernel's own drop is at max_queued_events, which this misses.
 const BUF: usize = 8192;
 
 extern "C" {
@@ -47,8 +41,7 @@ extern "C" {
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
 }
 
-// One directory at a time, plus the one a scan is currently reading. A negative fd is a box with no
-// inotify left to give, and a negative descriptor is nothing watched.
+// One directory at a time plus the one a scan is reading; a negative descriptor is nothing watched.
 pub struct Watch {
     fd: c_int,
     wd: c_int,
@@ -56,8 +49,7 @@ pub struct Watch {
 }
 
 impl Watch {
-    // A box that cannot hand out an inotify descriptor still gets a file manager: this reports no
-    // watch on stderr rather than refusing to start, and the listing is then as live as 0.1.4's was.
+    // A box with no inotify still gets a file manager, as live as 0.1.4's was, and is told once.
     pub fn start(tx: Sender<Event>) -> Watch {
         let fd = unsafe { inotify_init1(IN_CLOEXEC) };
         if fd < 0 {
@@ -68,16 +60,13 @@ impl Watch {
         Watch { fd, wd: -1, incoming: -1 }
     }
 
-    // Armed before a scan, alongside the watch the client is still on rather than in place of it, so
-    // a scan that fails costs that directory nothing and a change during the scan is still seen.
+    // Armed beside the current watch, so a scan that fails costs the open folder nothing.
     pub fn begin(&mut self, path: &Path) {
         self.drop_one(self.incoming);
         self.incoming = self.add(path);
     }
 
-    // The new listing replaced the old, so the directory it replaced stops being watched. A re-list of
-    // the SAME directory answers the descriptor it already had, so dropping it here would remove the
-    // watch this just re-armed and leave the folder followed by nothing.
+    // A re-list answers the descriptor the folder already had, so dropping it would unwatch it.
     pub fn commit(&mut self) {
         if self.incoming != self.wd {
             self.drop_one(self.wd);
@@ -86,9 +75,11 @@ impl Watch {
         self.incoming = -1;
     }
 
-    // The scan failed, so the listing did not move and neither did its watch.
+    // The scan failed, so the listing did not move and neither does its watch, aliased or not.
     pub fn abandon(&mut self) {
-        self.drop_one(self.incoming);
+        if self.incoming != self.wd {
+            self.drop_one(self.incoming);
+        }
         self.incoming = -1;
     }
 
@@ -101,8 +92,7 @@ impl Watch {
         self.incoming = -1;
     }
 
-    // A directory that cannot be watched is not an error the client can act on: it listed fine, and
-    // the only consequence is the listing this build shipped before the watch existed.
+    // A directory that cannot be watched is not an error the client can act on: it listed fine.
     fn add(&self, path: &Path) -> c_int {
         if self.fd < 0 {
             return -1;
@@ -119,22 +109,18 @@ impl Watch {
         }
     }
 
-    // A directory this box could have watched and did not, which is the only case worth a sentence
-    // per listing: with no inotify instance at all, Watch::start already said so once at startup.
+    // A directory this box could have watched and did not; no inotify at all is said once at startup.
     pub fn refused(&self) -> bool {
         self.fd >= 0 && self.wd < 0
     }
 
-    // A removed watch's own IN_IGNORED is delivered after inotify_rm_watch returns, so a burst is
-    // this directory's only while its descriptor still matches; without this every navigation would
-    // answer one changed line for the directory it had just arrived in.
+    // A removed watch's own IN_IGNORED arrives late, so only a matching descriptor is this folder's.
     pub fn is_current(&self, wd: i32) -> bool {
         self.wd >= 0 && wd == self.wd
     }
 }
 
-// Sample input: one 16 byte header then the name, wd 1, mask 0x00000100 (IN_CREATE), cookie 0,
-// len 16, "NEWFILE.txt\0\0\0\0\0".
+// Sample input: wd 1, mask 0x00000100, cookie 0, len 16, then "NEWFILE.txt\0\0\0\0\0".
 fn pump(fd: c_int, tx: Sender<Event>) {
     let mut buf = [0u8; BUF];
     loop {
@@ -161,8 +147,7 @@ fn pump(fd: c_int, tx: Sender<Event>) {
     }
 }
 
-// Which watches this burst touched, each named once. Nothing past the descriptor is read, because
-// the loop only has to know whether the burst belongs to the directory it is listing now.
+// Which watches this burst touched, each once; nothing past the descriptor is ever read.
 fn descriptors(buf: &[u8]) -> Vec<i32> {
     let mut out: Vec<i32> = Vec::new();
     let mut at = 0;
@@ -172,16 +157,13 @@ fn descriptors(buf: &[u8]) -> Vec<i32> {
         if !out.contains(&wd) {
             out.push(wd);
         }
-        // inotify hands back whole events only, so this can only overshoot on a buffer that did not
-        // come from one; the condition above is the bound that keeps the indexing inside the slice.
+        // The condition above is the bound that keeps this indexing inside the slice.
         at += EVENT_HEADER + len;
     }
     out
 }
 
-// The one unsolicited line on the wire: the client asked for a listing, and this says the directory
-// that listing came from is no longer what it answered with. path is that directory, so a client
-// that has since moved can tell whose notification it is holding.
+// The one unsolicited line: the listed directory is no longer what the listing answered with.
 pub fn changed_line(path: &Path) -> String {
     format!(r#"{{"t":"changed","path":"{}"}}"#, escape(&path.to_string_lossy()))
 }
@@ -235,8 +217,7 @@ mod tests {
         assert!(!w.is_current(1));
     }
 
-    // These build a Watch with no descriptor, so add and drop_one are no-ops: what they pin is which
-    // descriptor the bookkeeping calls current, and tests/protocol.sh pins what the syscalls do.
+    // No descriptor here, so these pin the bookkeeping alone; tests/protocol.sh pins the syscalls.
     #[test]
     fn an_abandoned_scan_leaves_the_current_watch_alone() {
         let mut w = Watch { fd: -1, wd: 7, incoming: -1 };

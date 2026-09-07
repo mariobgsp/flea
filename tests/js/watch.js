@@ -97,22 +97,36 @@ function run(check) {
     var deepAnchor = Nav.refreshWatched(deep)
     check("a re-read below the first window asks for the window the cursor was in",
           deep.sent.join(","), "list /home/gm,fsinfo,window 4000")
+    // onRows returns until onListed has run, so a reply always carries its total; see ui/PaneWire.qml.
     deep.held = 0
     deep.rows = [{ n: "a" }, { n: "b" }]
+    deep.total = 100000
     check("and the first window, which cannot hold that name, does not resolve the anchor",
           Nav.applyAnchor(deep, deepAnchor) === deepAnchor, true)
     check("and moves no cursor while it waits", deep.cursorSetTo, -1)
-    // One reply's grace and no more: a listing that shrank below that offset comes back clamped to
-    // row 0, and waiting on it for ever would leave the cursor unrestored and the anchor leaking.
-    var clamped = watched(4000, [{ n: "m" }], 4001, 100000)
+    // The wait is on the window arriving, not on a number of replies, so more of the first window
+    // in between does not give up on it; the anchor leaks for good if this ever stops holding.
+    check("more replies at the first window do not give up on the window asked for",
+          Nav.applyAnchor(deep, deepAnchor) === deepAnchor, true)
+    check("and still move no cursor", deep.cursorSetTo, -1)
+    // A listing that shrank past that offset comes back clamped to row 0, so the window asked for is
+    // never coming; waiting on it for ever would leave the cursor unrestored and the anchor leaking.
+    var clamped = watched(4000, [{ n: "m" }, { n: "n" }], 4001, 100000)
     var clampedAnchor = Nav.refreshWatched(clamped)
     clamped.held = 0
-    clamped.rows = [{ n: "a" }]
-    clamped.total = 1
-    check("a window clamped to row 0 is given one reply's grace",
-          Nav.applyAnchor(clamped, clampedAnchor) === clampedAnchor, true)
-    check("and then resolves against the clamp rather than waiting for ever",
-          Nav.applyAnchor(clamped, clampedAnchor) + "|" + clamped.cursorSetTo, "null|0")
+    clamped.rows = [{ n: "a" }, { n: "b" }]
+    clamped.total = 2
+    check("a listing that shrank past the window asked for resolves against the clamp",
+          Nav.applyAnchor(clamped, clampedAnchor) + "|" + clamped.cursorSetTo, "null|1")
+    // A listing of exactly start rows holds 0 to start-1, so window(start) is clamped here too: this is
+    // the offset the comparison has to exclude, and a >= would wait on that reply for ever.
+    var exact = watched(4000, [{ n: "m" }, { n: "n" }], 4001, 100000)
+    var exactAnchor = Nav.refreshWatched(exact)
+    exact.held = 0
+    exact.rows = [{ n: "a" }, { n: "b" }]
+    exact.total = 4000
+    check("a listing of exactly the offset asked for is clamped too, and resolves",
+          Nav.applyAnchor(exact, exactAnchor) + "|" + exact.cursorSetTo, "null|3999")
     deep.held = 4000
     deep.rows = [{ n: "m" }, { n: "n" }]
     check("the window it asked for is what puts the cursor back",

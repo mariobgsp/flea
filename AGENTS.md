@@ -176,8 +176,12 @@ sample therefore lands later than the sleep in front of it says.
 `applyAnchor` puts the cursor back on that name when the rows return, because a file created above
 the cursor shifts every index below it and restoring by index alone would move the user onto another
 file. The listing answers from row 0, so a cursor deep in a large directory also asks for its own
-window back and the anchor stands until that window arrives. A name that is gone from both falls
-back to the clamped old index, which keeps the view where the user left it. The filter query is put
+window back and the anchor stands until that window arrives. The wait is on the window and not on a
+number of replies, because `applyAnchor` runs on every rows delivery and a counter was spent by the
+first screenful arriving twice; it ends when the listing has shrunk to that offset or below, the one
+case where the backend clamps the window to row 0 and the reply being waited for is never coming.
+A name that is gone from both falls back to the clamped old index, which keeps the view where the
+user left it. The filter query is put
 back too: it narrows the rows the pane holds rather than choosing which directory it holds.
 
 **The selection is not re-anchored; the re-read waits for it instead.** `ui/js/Selection.js` is a set

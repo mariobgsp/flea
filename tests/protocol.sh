@@ -560,16 +560,19 @@ mkdir -p "$SELFDEL"
 out=$(watch_run "$SELFDEL" rmdir "$SELFDEL")
 check_changed "deleting the watched directory answers a changed line, from the watch's own removal" "$out" 1 3
 
-# A failed list answers its error and the directory still on screen keeps answering changed.
+# A failed list answers its error and the directory still on screen keeps answering changed. Two changes
+# a burst apart, because a watch the failure took away answers the one line its own removal made.
 out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
          sleep 0.4
          printf '{"c":"list","path":"/no/such/directory","first":10}\n'
          sleep 0.4
-         touch "$WT/after-a-failed-list.txt"
-         sleep 0.6
+         touch "$WT/after-a-failed-list-one.txt"
+         sleep 1.0
+         touch "$WT/after-a-failed-list-two.txt"
+         sleep 0.8
          printf '{"c":"quit"}\n' ) | $BIN --backend)
 check "a failed list still answers its error" "1" "$(echo "$out" | grep -c '"t":"error"')"
-check_changed "and the directory still on screen is still watched after it" "$out" 1 3
+check_changed "and the directory still on screen is still watched after it" "$out" 2 4
 
 # inotify answers the descriptor it already holds, so a commit that dropped it would unwatch the folder.
 out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"

@@ -96,7 +96,7 @@ function railLabel(mount, marks) {
 }
 
 // Sample input, captured live on the box with a USB stick plugged in (2026-09-02), from
-// lsblk --json -o NAME,LABEL,MOUNTPOINT,RM,SIZE,TYPE,MODEL:
+// lsblk --json -o NAME,LABEL,MOUNTPOINT,RM,HOTPLUG,TRAN,SUBSYSTEMS,SIZE,TYPE,MODEL:
 // {"blockdevices":[
 //   {"name":"sda","label":null,"mountpoint":null,"rm":true,"size":"116.1G","type":"disk","model":"USB Flash Disk",
 //    "children":[{"name":"sda1","label":"128GB","mountpoint":"/run/media/gm/128GB","rm":true,"size":"116.1G","type":"part","model":null}]}]}
@@ -119,12 +119,14 @@ function parseDevices(body) {
     return out
 }
 
-// corner: one internal disk on this box, so the first non-removable disk is "the" disk and its row means "/".
+// corner: one internal disk on this box, so the first non-external disk is "the" disk and its row means "/".
+// Externality is isExternal's, not RM's alone: USB bridges (a WD My Passport reports rm=false,
+// hotplug=true, tran=usb) must never win the internal row.
 function internalDisk(nodes) {
     for (var i = 0; i < nodes.length; i++) {
         var n = nodes[i]
         // lsblk on this box reports rm as a JSON boolean, measured 2026-09-02.
-        if (!n.name || n.type !== "disk" || n.rm)
+        if (!n.name || n.type !== "disk" || isExternal(n))
             continue
         // zram and loop devices are type "disk" too, and neither is a disk anyone browses.
         if (/^(zram|loop)/.test(String(n.name)))
@@ -134,16 +136,37 @@ function internalDisk(nodes) {
     return null
 }
 
-// A removable row is a partition on a removable disk, or a removable disk nobody ever partitioned.
+// A node is external when any transport says so. RM alone misses USB bridges: a WD My Passport
+// reports rm=false with hotplug=true, tran=usb, subsystems=block:scsi:usb:pci, while its partition
+// carries tran=null, so collectVolumes inherits the parent's answer the way it inherits the model.
+function isExternal(n) {
+    if (!n)
+        return false
+    if (n.rm || n.hotplug)
+        return true
+    if (String(n.tran || "").toLowerCase() === "usb")
+        return true
+    var subs = String(n.subsystems || "").toLowerCase()
+    if (/(^|:)(usb)(:|$)/.test(subs))
+        return true
+    return false
+}
+
+// A removable row is a partition on an external disk, or an external disk nobody ever partitioned.
 function collectVolumes(nodes, model, out) {
+    collectExternal(nodes, model, false, out)
+}
+
+function collectExternal(nodes, model, parentExternal, out) {
     for (var i = 0; i < nodes.length; i++) {
         var n = nodes[i]
         var kids = n.children || []
         // Only the disk carries a product name, so it is passed down to its own partitions.
         var own = n.model ? String(n.model) : model
-        if (n.name && n.rm && (n.type === "part" || (n.type === "disk" && kids.length === 0)))
+        var ext = parentExternal || isExternal(n)
+        if (n.name && ext && (n.type === "part" || (n.type === "disk" && kids.length === 0)))
             out.push(volumeRow(n, own))
-        collectVolumes(kids, own, out)
+        collectExternal(kids, own, ext, out)
     }
 }
 

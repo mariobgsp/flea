@@ -13,6 +13,9 @@ escaper in `src/json.rs`, dispatched by `src/backend/run.rs`.
 2. Errors are messages, never exit statuses. `--backend` runs until it reads `quit`
    or stdin closes, and returns exit code 0 either way; every failure is an `error`
    line the client reads off stdout, not a process exit code.
+3. Exactly one line arrives unasked: `changed`, which says the listed directory was
+   altered by another program. It can land between any request and its reply, so a
+   client that counts lines rather than reading their `t` field will misread the wire.
 
 ## Requests
 
@@ -873,6 +876,45 @@ Example: `{"t":"undone","op":"move","ok":true}`
 
 `op` is the kind of operation that was reversed, one of `rename`, `duplicate`, `mkdir`, `trash`, `copy`
 or `move`, which is what lets the status bar say what it just put back.
+
+### changed
+
+`{"t":"changed","path":"<string>"}`
+
+Example: `{"t":"changed","path":"/home/gm/Downloads"}`
+
+**The one line no request asks for.** Every other response answers a request; this one says the
+directory the current listing came from is no longer what `list` answered with, because another
+program created, deleted, renamed, wrote or chmod'd something in it. Nothing the backend holds
+changes with it: the rows, the count and the sort order are exactly what they were, and a client
+that wants the new directory sends `list` again. `path` is the watched directory, so a client that
+has navigated since the notification was written can tell it is not about the folder it is on now,
+and drop it.
+
+A successful `list` starts watching its path and stops watching the previous one. `search` and
+`listpaths` both stop watching, because a set of matches and a set of named paths are not
+directories. A failed `list` changes nothing, so the directory that is still listed is still the
+one being watched.
+
+The mechanism is one inotify watch on that one directory, non-recursive, with the mask
+`IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_DELETE_SELF |
+IN_MOVE_SELF`, which is exactly the set of events that changes what a listing says: which names are
+in it, and the size, date and mode its columns draw. **A file growing under an open handle is not
+one of them.** `IN_MODIFY` fires on every `write(2)` and a listing does not draw a partial size, so
+a row's size follows the writer closing the file rather than the writer writing to it.
+
+**One burst is one line.** The event payload is read only far enough to name its watch descriptor,
+never for which file moved, and the reader then pauses 100 ms before reading again, so a directory
+being rewritten costs one `changed` line per 100 ms rather than one per file. Anything the kernel
+drops in that window costs nothing, because every event in a burst says the same thing to a client
+that re-reads the whole directory anyway.
+
+`--backend` on a box whose inotify instance limit is exhausted prints one sentence to stderr at
+startup and then never sends this line; every other request answers exactly as before. A client
+must therefore treat a live listing as an improvement it may not get, not as a guarantee. A
+network mount is the other case: inotify sees the local kernel's own view of a directory, so a
+change another machine makes to an NFS or SMB share is not delivered, and Flea is stale there in
+exactly the way it was before this line existed.
 
 ### error
 

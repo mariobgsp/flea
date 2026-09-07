@@ -131,6 +131,62 @@ bytes. A key that is none of the three, `kind` and `mode` included, reaches neit
 phase: `sort.rs`'s `parse_sort_by()` refuses it with the one sentence that names the
 three it accepts.
 
+## The open directory is watched
+
+Issue 68: a folder open in Flea did not follow a create, rename or delete made by another program.
+`list` ran once when the pane arrived, and after that only Flea's own writes re-read the directory,
+so a window kept open beside a terminal drew whatever was true when it was opened.
+
+**The backend watches, the client re-reads.** `backend/watch.rs` holds one non-recursive inotify
+watch on `st.base`, moved by every successful `list` and dropped by `search` and `listpaths`, whose
+listings are not directories. Its reader thread sends the loop an `Event::Changed(wd)`, and the loop
+answers `{"t":"changed","path":"<the directory>"}` and changes nothing else: the rows, the count and
+the sort order stay exactly what they were, because the client is the only thing that knows whether
+it still wants them. See `docs/protocol.md` "changed" for the mask and the coalescing.
+
+**The descriptor is why the payload is read at all.** `inotify_rm_watch` delivers an `IN_IGNORED` for
+the watch it removed, so a reader that treated every wakeup as "something changed" answered one
+`changed` line for every navigation, for the directory the pane had just arrived in. The reader walks
+the burst for its watch descriptors and nothing else, and `Watch::is_current` drops any that is not
+the one being listed now. `tests/protocol.sh`'s "a change in the directory just left answers nothing"
+is that case.
+
+**One burst is one re-read, and it is not restarted.** `ui/PaneWire.qml` starts a 400 ms timer on the
+first `changed` after idle and lets later ones land inside it rather than restarting it: a restart
+would mean a directory under continuous writing never settled and so never refreshed at all. Worst
+case is one full re-scan per 400 ms while something is actively rewriting the folder the user is
+looking at, which is 25 to 38 ms of that on the 100,000 file fixture.
+
+**A re-read is a fresh `list`, so it renumbers every row, and that is what the anchor is for.**
+`ui/js/Nav.js`'s `refreshWatched` records the NAME under the cursor before the re-read and
+`applyAnchor` puts the cursor back on that name when the rows return, because a file created above
+the cursor shifts every index below it and restoring by index alone would move the user onto another
+file. The listing answers from row 0, so a cursor deep in a large directory also asks for its own
+window back and the anchor stands until that window arrives. A name that is gone from both falls
+back to the clamped old index, which keeps the view where the user left it. The filter query is put
+back too: it narrows the rows the pane holds rather than choosing which directory it holds.
+
+**The selection is not re-anchored; the re-read waits for it instead.** `ui/js/Selection.js` is a set
+of row indices and its own rule is that a new listing clears them, because an index into a directory
+that has changed names another file. Re-pointing a selection at other files is how a delete hits the
+wrong ones, so `PaneWire`'s `watchBusy` defers the re-read while a selection stands, and with it
+while a rename editor is open, the context menu is up, a filter is being typed, a search listing is
+showing or a list is already in flight. The debt is kept, not dropped: `onWatchBusyChanged` pays it
+the moment the last of those clears. A user holding a selection therefore sees the same stale
+listing 0.1.4 always showed, for as long as they hold it.
+
+**// corner: this is the local kernel's view of one directory.** A change another machine makes to an
+NFS or SMB share raises no inotify event here, so a network mount is exactly as live as it was
+before. So is a box whose inotify instance limit is exhausted, which says so once on stderr and then
+never sends the line. `IN_MODIFY` is deliberately not in the mask: it fires on every `write(2)` and a
+listing does not draw a partial size, so a row's size follows `IN_CLOSE_WRITE` instead.
+
+**Flea's own writes pay for one extra scan.** A rename, mkdir, trash or transfer already calls
+`pane.refresh()`, and the watch answers for the same write about 400 ms later, so the directory is
+read twice. The second read is anchored the same way and moves nothing the user can see. Suppressing
+it would mean deciding that a `changed` arriving during a listing belongs to that listing, which is
+exactly the guess that would drop a real outside change, so it is paid rather than guessed at.
+
 ## Why the listing is an arena
 
 `Listing` (`listing.rs`) holds one `String` with every entry's name written back to
@@ -935,6 +991,11 @@ this coverage needed no new entry there.
 - `backend/run.rs` the command loop, see "Thumbnail requests". stdin is read on its own
   thread and the pool answers on its own channel, and a forwarder thread joins the two, so
   client requests and worker results arrive on one `recv`, because `std` has no `select`.
+- `backend/events.rs` the `Event` those sources arrive as, and the three threads that join them
+  onto the loop's one channel. It came out of `run.rs` at 398 of the 400 hard cap, and it is one
+  job: how work reaches the loop, as against what the loop does with it.
+- `backend/watch.rs` the one inotify watch on the directory the current listing came from, its
+  reader thread and the `changed` line it answers with, see "The open directory is watched".
 - `heap.rs` pins glibc's mmap threshold for the backend, see "The listing arena returns to the OS".
 - `launcher/mod.rs` re-exports `prewarm`, nothing else.
 - `launcher/prewarm.rs` writes the listing and first screenful before the UI starts.
@@ -955,7 +1016,9 @@ this coverage needed no new entry there.
   settle timer and the row-to-thumbnail map, see "Thumbnail requests in the GUI".
 - `ui/PaneWire.qml` is where every reply from outside the window lands: the backend's, and
   those of the three foreign programs the pane runs (`ui/Opener.qml`, `ui/ShareLink.qml`,
-  `ui/Taildrop.qml`); it owns no state and writes only through the pane handed in.
+  `ui/Taildrop.qml`); it writes through the pane handed in and owns only the state a reply needs
+  before the pane has a row for it: the folder a `made` line will open an editor on, and the
+  watched re-read's debt, timer and cursor anchor, see "The open directory is watched".
 - `ui/Header.qml` renders the column header band and its rule, and owns nothing else: it
   was lifted out of `Pane.qml` at the 400-line hard cap and has no behaviour.
 - `ui/Row.qml` renders one row delegate: the icon slot, which a thumbnail replaces in

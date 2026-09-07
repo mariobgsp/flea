@@ -444,6 +444,99 @@ check "an archive op that names neither is refused by name" "op must be compress
 check "and the refusal names the op it was given" "bogus" "$(echo "$out" | grep -oE '"path":"[^"]*"' | head -1 | cut -d'"' -f4)"
 check "and no job was started for it" "0" "$(echo "$out" | grep -c '"t":"archivestarted"')"
 
+# Issue 68: the listed directory is watched, so a change made from outside answers a changed line.
+# The only unsolicited line on the wire, so every case here is driven by a real create, rename or
+# delete landing between two requests rather than by a request asking for it.
+WT_SB="$FIXTURE_ROOT/flea-watch-test-$$"
+WT="$WT_SB/tree"
+OTHER="$WT_SB/other"
+sandbox_make "$WT_SB"
+mkdir -p "$WT" "$OTHER"
+printf 'a' > "$WT/alpha.txt"
+
+# The change runs argv-direct between the list and the quit, which is where an outside write lands.
+watch_run() {
+  local dir="$1"
+  shift
+  ( printf '{"c":"list","path":"%s","first":10}\n' "$dir"
+    sleep 0.4
+    "$@"
+    sleep 0.6
+    printf '{"c":"quit"}\n'
+  ) | $BIN --backend
+}
+
+# One create can wake the reader once or twice (the create, then the close and the timestamp), so
+# the assertion is that the wire said something and did not say it per event, never an exact count.
+check_changed() {
+  local label="$1" out="$2" low="$3" high="$4"
+  local n
+  n=$(echo "$out" | grep -c '"t":"changed"')
+  [ "$n" -ge "$low" ] && [ "$n" -le "$high" ]
+  check "$label (saw $n)" "0" "$?"
+}
+
+burst_of_creates() {
+  local i
+  for i in $(seq 1 100); do
+    : > "$WT/burst-$i.txt"
+  done
+}
+
+out=$(watch_run "$WT" touch "$WT/created.txt")
+check_changed "a create from outside answers a changed line" "$out" 1 3
+check "and that line names the directory being listed" "$WT" "$(echo "$out" | grep '"t":"changed"' | head -1 | grep -oE '"path":"[^"]*"' | cut -d'"' -f4)"
+check "and the listing itself is not re-sent, because the client asks for that" "1" "$(echo "$out" | grep -c '"t":"listed"')"
+
+out=$(watch_run "$WT" mv "$WT/created.txt" "$WT/renamed.txt")
+check_changed "a rename from outside answers a changed line" "$out" 1 3
+
+out=$(watch_run "$WT" rm -f "$WT/renamed.txt")
+check_changed "a delete from outside answers a changed line" "$out" 1 3
+
+out=$(watch_run "$WT" mkdir "$WT/made")
+check_changed "a new directory from outside answers a changed line" "$out" 1 3
+rmdir "$WT/made"
+
+# The negative control, which is what proves the watch is on the listed directory and not on the box.
+out=$(watch_run "$WT" touch "$OTHER/elsewhere.txt")
+check_changed "a change in a directory that is not listed answers nothing" "$out" 0 0
+
+# Navigating drops the old watch. Without the descriptor check in src/backend/watch.rs the removal's
+# own IN_IGNORED would answer here, so this case reddens on exactly the bug it was written for.
+out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
+         sleep 0.4
+         printf '{"c":"list","path":"%s","first":10}\n' "$OTHER"
+         sleep 0.6
+         touch "$WT/after-leaving.txt"
+         sleep 0.6
+         printf '{"c":"quit"}\n' ) | $BIN --backend)
+check_changed "a change in the directory just left answers nothing" "$out" 0 0
+check "and moving to a new directory answers nothing on its own" "2" "$(echo "$out" | grep -c '"t":"listed"')"
+
+# A search replaces the listing with matches, which are not a directory, so nothing is watched.
+out=$( ( printf '{"c":"search","path":"%s","query":"alpha"}\n' "$WT"
+         sleep 0.6
+         touch "$WT/during-search.txt"
+         sleep 0.6
+         printf '{"c":"quit"}\n' ) | $BIN --backend)
+check_changed "a change under a search answers nothing, because matches are not a directory" "$out" 0 0
+
+# listpaths lists a set the client named, whose base is the root; watching that would be a lie.
+out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
+         sleep 0.4
+         printf '{"c":"listpaths","paths":["%s/alpha.txt"],"first":10}\n' "$WT"
+         sleep 0.6
+         touch "$WT/during-listpaths.txt"
+         sleep 0.6
+         printf '{"c":"quit"}\n' ) | $BIN --backend)
+check_changed "a change under listpaths answers nothing, because named paths are not a directory" "$out" 0 0
+
+# A burst is coalesced by the reader, so a hundred creates cost a handful of lines, not a hundred.
+out=$(watch_run "$WT" burst_of_creates)
+check_changed "a hundred creates answer a handful of changed lines, not a hundred" "$out" 1 10
+sandbox_remove "$WT_SB"
+
 # No per-key cleanup: the cache is inside the sandbox, so it goes when the sandbox does.
 sandbox_remove "$SB"
 exit $fail

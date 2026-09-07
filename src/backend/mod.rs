@@ -16,6 +16,7 @@ pub mod linecount;
 pub mod dirsize;
 pub mod dirsizereq;
 pub mod listpaths;
+pub mod events;
 pub mod scan;
 pub mod fuzzy;
 pub mod search;
@@ -51,6 +52,8 @@ mod mountinfo;
 mod renamecompat;
 pub mod trash;
 pub mod undo;
+// The open listing's directory, watched so an outside change reaches the client; see docs/protocol.md "changed".
+pub mod watch;
 // Test-only: hard rule 9's sandbox root, so no destructive test names a path outside one.
 #[cfg(test)]
 pub mod testdir;

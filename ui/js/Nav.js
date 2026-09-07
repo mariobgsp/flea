@@ -110,6 +110,56 @@ function refresh(pane, selectPath) {
     pane.openWithoutHistory(pane.path)
 }
 
+// A change another program made under the open listing, unlike refresh() above which follows Flea's
+// own write. The rows are read again and the cursor is put back on the file it was on by name,
+// because a create above it renumbers every row below and a listing that jumped back to the top
+// would move the user while they were reading it. Returns the anchor applyAnchor() resolves, or null.
+function refreshWatched(pane) {
+    if (pane.listInFlight) {
+        return null
+    }
+    var row = pane.rowFor(pane.cursorIndex)
+    // The path rides along because the anchor can outlive one rows reply: a navigation between the
+    // two below would otherwise put this directory's cursor row onto the next directory's listing.
+    var anchor = { name: row ? String(row.n) : "", index: pane.cursorIndex, start: pane.held, path: pane.path }
+    var query = pane.filterQuery
+    pane.openWithoutHistory(pane.path)
+    // A filter narrows the rows the pane holds rather than choosing which directory it holds, so it
+    // survives a re-read of the same directory; every other caller of openWithoutHistory drops it.
+    pane.filterQuery = query
+    // The re-read answers from row 0, so a cursor deep in a large directory needs its own window back
+    // before the anchor's name can be looked for anywhere near where it was.
+    if (anchor.start > 0) {
+        pane.backend.window(anchor.start, pane.windowSize)
+    }
+    return anchor
+}
+
+// Runs on each rows reply while an anchor stands. The name can arrive in the listing's own first
+// window or in the one asked for above, so a miss in the first is not yet a miss. A name that is
+// gone from both leaves the old index, which keeps the view where the user left it.
+function applyAnchor(pane, anchor) {
+    if (!anchor) {
+        return null
+    }
+    if (pane.path !== anchor.path) {
+        return null
+    }
+    for (var i = 0; i < pane.rows.length; i++) {
+        if (String(pane.rows[i].n) === anchor.name) {
+            pane.setCursor(pane.held + i)
+            return null
+        }
+    }
+    if (anchor.start > 0 && pane.held === 0) {
+        return anchor
+    }
+    if (pane.total > 0) {
+        pane.setCursor(Math.min(anchor.index, pane.total - 1))
+    }
+    return null
+}
+
 // Only the first rows response looks for the target, then it is forgotten either way, so a later
 // directory change never re-reveals it. The target is a full path, which is what --select carries.
 function applyPendingSelect(pane) {

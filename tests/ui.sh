@@ -1904,6 +1904,74 @@ case_selection() {
     kill_flea
 }
 
+# Issue 68, driven exactly as it was reported: the reporter's own four changes made from outside
+# the window, with nothing clicked and no folder left. Catches deleting the watch from
+# src/backend/watch.rs, the changed branch from ui/Backend.qml, or the re-read from ui/PaneWire.qml.
+case_watch() {
+    local dir="$fixture_root/watch"
+    sandbox_scratch "$dir"
+    printf 'a\n' > "$dir/alpha.txt"
+    printf 'b\n' > "$dir/beta.txt"
+    printf 'p\n' > "$dir/preview-me.txt"
+    launch "$dir"
+    wait_listing 3
+    [[ "$(ipc rowAt 0)" == alpha.txt\|* ]] || fail "watch: row 0 is $(ipc rowAt 0), not alpha.txt"
+
+    # The reporter's four changes, from another process, while the window sits on the folder.
+    printf 'new\n' > "$dir/NEWFILE-appeared.txt"
+    mv "$dir/alpha.txt" "$dir/alpha-RENAMED.txt"
+    rm "$dir/beta.txt"
+    mkdir "$dir/brand-new-folder"
+    # The 400 ms settle plus the re-read; the reporter waited several seconds and saw nothing move.
+    # Four rows now: brand-new-folder, NEWFILE-appeared.txt, alpha-RENAMED.txt, preview-me.txt.
+    omarchy-drive wait ipc -p "$flea_ui" flea total 4 --timeout 15 >/dev/null \
+        || fail "watch: the listing stayed at $(ipc total) rows after four outside changes"
+    settle
+    printf 'WATCH total=%s row0=%q row1=%q row2=%q\n' \
+        "$(ipc total)" "$(ipc rowAt 0)" "$(ipc rowAt 1)" "$(ipc rowAt 2)"
+    shot watch-after-outside-changes
+    # Directories first, then name ascending and case-insensitive: brand-new-folder,
+    # alpha-RENAMED.txt, NEWFILE-appeared.txt, preview-me.txt.
+    [[ "$(ipc rowAt 0)" == brand-new-folder\|dir\|* ]] \
+        || fail "watch: the new directory is not row 0, got $(ipc rowAt 0)"
+    [[ "$(ipc rowAt 1)" == alpha-RENAMED.txt\|* ]] \
+        || fail "watch: the renamed file is not row 1, got $(ipc rowAt 1)"
+    [[ "$(ipc rowAt 2)" == NEWFILE-appeared.txt\|* ]] \
+        || fail "watch: the created file is not row 2, got $(ipc rowAt 2)"
+    [[ "$(ipc rowAt 3)" == preview-me.txt\|* ]] \
+        || fail "watch: the untouched file is not row 3, got $(ipc rowAt 3)"
+
+    # The cursor is put back on the file it was on, not on the row that index now names: without the
+    # anchor the create above it leaves the cursor on brand-new-folder.
+    goto_row 3
+    [[ "$(ipc rowAt "$(ipc cursor)")" == preview-me.txt\|* ]] \
+        || fail "watch: the cursor did not start on preview-me.txt"
+    printf 'z\n' > "$dir/AAA-above-the-cursor.txt"
+    omarchy-drive wait ipc -p "$flea_ui" flea total 5 --timeout 15 >/dev/null \
+        || fail "watch: the second outside create left the listing at $(ipc total) rows"
+    settle
+    printf 'WATCH cursor=%s row=%q\n' "$(ipc cursor)" "$(ipc rowAt "$(ipc cursor)")"
+    [[ "$(ipc rowAt "$(ipc cursor)")" == preview-me.txt\|* ]] \
+        || fail "watch: a create above the cursor moved it to $(ipc rowAt "$(ipc cursor)")"
+
+    # A selection names rows by index, so the re-read waits for it rather than re-pointing it.
+    key v >/dev/null
+    settle
+    [[ "$(ipc selectionCount)" == "1" ]] || fail "watch: v did not select the cursor row"
+    printf 'held\n' > "$dir/BBB-while-selected.txt"
+    sleep 2
+    [[ "$(ipc total)" == "5" ]] \
+        || fail "watch: the listing re-read to $(ipc total) rows while a selection stood"
+    [[ "$(ipc selectionCount)" == "1" ]] || fail "watch: the held selection was cleared anyway"
+    # Clearing the selection is what pays the debt the notification left standing.
+    key -k Escape >/dev/null
+    omarchy-drive wait ipc -p "$flea_ui" flea total 6 --timeout 15 >/dev/null \
+        || fail "watch: clearing the selection did not run the owed re-read, total is $(ipc total)"
+    printf 'WATCH deferred=ok paid=ok total=%s\n' "$(ipc total)"
+    assert_window
+    kill_flea
+}
+
 # Mirrors the two env vars src/gui.rs sets from a resolved --select; tests/modes.sh covers the resolution itself.
 case_select() {
     local dir="$fixture_root/select"
@@ -5904,7 +5972,7 @@ cache_snapshot
 trap cleanup EXIT
 
 declare -a wanted=("$@")
-[[ ${#wanted[@]} -eq 0 ]] && wanted=(cursor terminal open rows click menu background hidden selection select colour lifted icons thumbs hashcache stale nosweep oem header overflow focus preview network netmark networkauth networktimeout gvfs sharebrowser unmount eject rename renamelife taildrop grid columns operations tabs openterminal renderer settings hangshare)
+[[ ${#wanted[@]} -eq 0 ]] && wanted=(cursor terminal open rows click menu background hidden selection watch select colour lifted icons thumbs hashcache stale nosweep oem header overflow focus preview network netmark networkauth networktimeout gvfs sharebrowser unmount eject rename renamelife taildrop grid columns operations tabs openterminal renderer settings hangshare)
 
 : > "$run_log"
 : > "$flea_log"

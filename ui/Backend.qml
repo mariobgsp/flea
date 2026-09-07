@@ -29,6 +29,9 @@ Item {
     signal paths(var list)
     signal meta(int row, int w, int h, real durationMs, int sampleRate, int entries, real unpacked, bool archiveFailed, var names, real lines, bool partial, bool linesFailed, string target, bool targetDir, string owner)
     signal fsInfo(string fs, real free)
+    // The one line no request asked for: the directory the current listing came from changed under
+    // it. path is that directory, so a pane that has since moved can ignore it; see docs/protocol.md.
+    signal changed(string path)
     // readFailed tells a zero-row answer apart from an empty directory; mode is that directory's own, 0 when the stat failed too.
     // hidden is the flag the request carried, echoed by the backend: two clients peek this wire, so path alone does not say whose reply this is.
     signal peeked(string path, bool hidden, int total, var rows, bool readFailed, int mode)
@@ -238,6 +241,7 @@ Item {
     // Sample input: {"t":"rows","start":0,"rows":[{"n":"a.txt","d":false,"s":3,"m":1787790423,"p":33188,"i":"text-x-generic","t":false,"k":0}],"kinds":["Plain text document"],"ms":1.250}
     // Sample input: {"t":"thumbed","row":2,"file":"/home/gm/.cache/thumbnails/large/b98fa4.png","ms":75.823}
     // Sample input: {"t":"dirsized","row":4,"bytes":1048576,"partial":false,"ms":12.500}
+    // Sample input: {"t":"changed","path":"/home/gm/Downloads"}
     // Sample input: {"t":"searching","n":812,"scanned":41200,"ms":300.114}
     // Sample input: {"t":"transferstarted","id":12,"n":2,"moving":true}
     // Sample input: {"t":"transferprogress","id":12,"index":0,"name":"a.txt","bytes":40000000,"total":120000000}
@@ -297,6 +301,8 @@ Item {
             root.meta(message.row, message.w, message.h, message.ms, message.rate, message.entries, message.unpacked, message.afailed, message.names, message.lines, message.partial, message.lfailed === true, message.target, message.targetdir, message.owner || "")
         } else if (message.t === "fsinfo") {
             root.fsInfo(message.fs, message.free)
+        } else if (message.t === "changed") {
+            root.changed(message.path || "")
         } else if (message.t === "peeked") {
             root.peeked(message.path, message.hidden === true, message.n, message.rows || [], message.failed === true, message.mode || 0)
         } else if (message.t === "formats") {

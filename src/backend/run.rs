@@ -162,19 +162,21 @@ fn handle_line(
             if finish_search(out, st, true) {
                 forget_rows(st, pool);
             }
-            // Before the scan and not after it: a change landing while readdir runs is missing from the
-            // rows this answers with, so it is exactly the change the client has to be told about.
-            watch.follow(Path::new(&path));
+            // Before the scan and beside the current watch, not in place of it: a change landing while
+            // readdir runs is missing from the rows this answers with, and a scan that fails must not
+            // cost the directory still on screen the descriptor its own events carry.
+            watch.begin(Path::new(&path));
             match scan(&path, hidden) {
                 Ok((mut l, read_ms)) => {
                     let sort_ms = sort_by_name(&mut l, false);
                     // base and listing only move together, so a failed list cannot mix them.
                     st.base = PathBuf::from(&path);
                     st.listing = l;
+                    watch.commit();
                     forget_rows(st, pool);
-                    // Said once per listing that got one, because a directory nobody can watch is a
-                    // directory that goes stale in silence; see docs/protocol.md "changed".
-                    if !watch.watching() {
+                    // Said once per listing, because a directory nobody can watch goes stale in
+                    // silence; see docs/protocol.md "changed".
+                    if watch.refused() {
                         eprintln!("flea: {} will not follow outside changes, inotify refused a watch on it", path);
                     }
                     writeln!(out, "{}", listed_line(st.listing.len(), read_ms, sort_ms, dev_of(&st.base))).ok();
@@ -182,8 +184,8 @@ fn handle_line(
                     write_window(out, st, 0, first, tb);
                 }
                 Err(e) => {
-                    // The listing did not move, so the watch goes back to the directory still on screen.
-                    watch.follow(&st.base);
+                    // The listing did not move, so neither does its watch.
+                    watch.abandon();
                     // A typed path reaches the denial with no parent row to remember the mode from,
                     // so the stat that survives the refused read is the pane's only source for it.
                     writeln!(out, "{}", error_line_with_mode(&e, mode_of(&path))).ok();

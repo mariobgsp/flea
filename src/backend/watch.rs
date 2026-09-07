@@ -36,7 +36,7 @@ const EVENT_HEADER: usize = 16;
 // Every event in one burst says the same thing to a client that re-reads the whole directory, so the
 // thread pauses after a burst and a thousand writes cost one line instead of a thousand.
 const COALESCE: Duration = Duration::from_millis(100);
-// A batch size and not a limit: one read takes whole events only and leaves the rest queued for the
+// A batch size and not a limit: a read takes whole events only and leaves the rest queued for the
 // next one, and the kernel's own drop happens at max_queued_events, which this does not bound.
 const BUF: usize = 8192;
 
@@ -47,11 +47,12 @@ extern "C" {
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
 }
 
-// One directory at a time, because the backend holds one listing at a time. A negative fd is a box
-// with no inotify left to give, and a negative wd is nothing watched right now.
+// One directory at a time, plus the one a scan is currently reading. A negative fd is a box with no
+// inotify left to give, and a negative descriptor is nothing watched.
 pub struct Watch {
     fd: c_int,
     wd: c_int,
+    incoming: c_int,
 }
 
 impl Watch {
@@ -61,38 +62,61 @@ impl Watch {
         let fd = unsafe { inotify_init1(IN_CLOEXEC) };
         if fd < 0 {
             eprintln!("flea: the open folder will not follow outside changes, inotify is unavailable");
-            return Watch { fd: -1, wd: -1 };
+            return Watch { fd: -1, wd: -1, incoming: -1 };
         }
         thread::spawn(move || pump(fd, tx));
-        Watch { fd, wd: -1 }
+        Watch { fd, wd: -1, incoming: -1 }
     }
 
-    // The listing moved, so the old watch goes before the new one is added.
-    pub fn follow(&mut self, path: &Path) {
-        self.stop();
-        if self.fd < 0 {
-            return;
-        }
-        let c = match CString::new(path.as_os_str().as_encoded_bytes()) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        // A directory that cannot be watched is not an error the client can act on: it listed fine,
-        // and the only consequence is the listing this build shipped before the watch existed.
-        self.wd = unsafe { inotify_add_watch(self.fd, c.as_ptr(), MASK) };
+    // Armed before a scan, alongside the watch the client is still on rather than in place of it, so
+    // a scan that fails costs that directory nothing and a change during the scan is still seen.
+    pub fn begin(&mut self, path: &Path) {
+        self.drop_one(self.incoming);
+        self.incoming = self.add(path);
+    }
+
+    // The new listing replaced the old, so the directory it replaced stops being watched.
+    pub fn commit(&mut self) {
+        self.drop_one(self.wd);
+        self.wd = self.incoming;
+        self.incoming = -1;
+    }
+
+    // The scan failed, so the listing did not move and neither did its watch.
+    pub fn abandon(&mut self) {
+        self.drop_one(self.incoming);
+        self.incoming = -1;
     }
 
     pub fn stop(&mut self) {
-        if self.fd >= 0 && self.wd >= 0 {
-            unsafe { inotify_rm_watch(self.fd, self.wd) };
-        }
+        self.drop_one(self.wd);
+        self.drop_one(self.incoming);
         self.wd = -1;
+        self.incoming = -1;
     }
 
-    // Whether a directory is being followed right now, which src/backend/run.rs reports on once the
-    // listing it belongs to succeeded; a refusal before that belongs to a path that was never listed.
-    pub fn watching(&self) -> bool {
-        self.wd >= 0
+    // A directory that cannot be watched is not an error the client can act on: it listed fine, and
+    // the only consequence is the listing this build shipped before the watch existed.
+    fn add(&self, path: &Path) -> c_int {
+        if self.fd < 0 {
+            return -1;
+        }
+        match CString::new(path.as_os_str().as_encoded_bytes()) {
+            Ok(c) => unsafe { inotify_add_watch(self.fd, c.as_ptr(), MASK) },
+            Err(_) => -1,
+        }
+    }
+
+    fn drop_one(&self, wd: c_int) {
+        if self.fd >= 0 && wd >= 0 {
+            unsafe { inotify_rm_watch(self.fd, wd) };
+        }
+    }
+
+    // A directory this box could have watched and did not, which is the only case worth a sentence
+    // per listing: with no inotify instance at all, Watch::start already said so once at startup.
+    pub fn refused(&self) -> bool {
+        self.fd >= 0 && self.wd < 0
     }
 
     // A removed watch's own IN_IGNORED is delivered after inotify_rm_watch returns, so a burst is
@@ -110,11 +134,12 @@ fn pump(fd: c_int, tx: Sender<Event>) {
     loop {
         let n = unsafe { read(fd, buf.as_mut_ptr() as *mut c_void, BUF) };
         if n < 0 {
+            let failure = io::Error::last_os_error();
             // A signal can cut a blocking read short, which is not the descriptor going away.
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            if failure.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
-            eprintln!("flea: the open folder stopped following outside changes, the inotify read failed");
+            eprintln!("flea: the open folder stopped following outside changes, the inotify read failed: {}", failure);
             return;
         }
         // A closed descriptor ends the thread; the loop keeps running without a watch.
@@ -141,8 +166,8 @@ fn descriptors(buf: &[u8]) -> Vec<i32> {
         if !out.contains(&wd) {
             out.push(wd);
         }
-        // A tail too short to hold another header ends the walk, which is also what stops a truncated
-        // one being read past the end: at overshoots and the condition above is what refuses it.
+        // inotify hands back whole events only, so this can only overshoot on a buffer that did not
+        // come from one; the condition above is the bound that keeps the indexing inside the slice.
         at += EVENT_HEADER + len;
     }
     out
@@ -183,7 +208,7 @@ mod tests {
         assert_eq!(descriptors(&buf), vec![3, 4]);
     }
 
-    // A read can end mid-event: the last complete header is still named and nothing is read past the end.
+    // Not a shape inotify produces: it pins the bound, so a length running past the slice cannot panic.
     #[test]
     fn a_truncated_tail_ends_the_walk() {
         let mut buf = event(3, b"a.txt\0\0\0");
@@ -199,9 +224,29 @@ mod tests {
 
     #[test]
     fn nothing_is_current_before_a_directory_is_followed() {
-        let w = Watch { fd: -1, wd: -1 };
+        let w = Watch { fd: -1, wd: -1, incoming: -1 };
         assert!(!w.is_current(-1));
         assert!(!w.is_current(1));
+    }
+
+    // A scan that fails leaves the listed directory on the descriptor it already had, which is the
+    // whole point of arming the next one beside it rather than in place of it.
+    #[test]
+    fn an_abandoned_scan_leaves_the_current_watch_alone() {
+        let mut w = Watch { fd: -1, wd: 7, incoming: -1 };
+        w.begin(Path::new("/tmp"));
+        w.abandon();
+        assert!(w.is_current(7));
+        assert!(!w.refused());
+    }
+
+    // And one that succeeds hands the listing over to the descriptor the scan was armed with.
+    #[test]
+    fn a_committed_scan_takes_over_from_the_old_watch() {
+        let mut w = Watch { fd: -1, wd: 7, incoming: 9 };
+        w.commit();
+        assert!(w.is_current(9));
+        assert!(!w.is_current(7));
     }
 
     #[test]

@@ -893,10 +893,11 @@ and drop it.
 
 A `list` starts watching its path **before it reads the directory**, not after, because a change
 landing while the read runs is missing from the rows that `list` is about to answer with and is
-therefore exactly the change the client has to be told about. A `list` that then fails to scan puts
-the watch back on the directory that is still listed, so a refused path never costs the open one its
-watch. `search` and `listpaths` both stop watching, because a set of matches and a set of named
-paths are not directories.
+therefore exactly the change the client has to be told about. It is armed **beside** the watch the
+client is already on rather than in place of it, so a `list` that then fails to scan costs the
+directory still listed nothing at all: its watch was never removed, and the descriptor its own
+events carry is still the current one. `search` and `listpaths` both stop watching, because a set of
+matches and a set of named paths are not directories.
 
 The mechanism is one inotify watch on that one directory, non-recursive, with the mask
 `IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_MOVE_SELF`,

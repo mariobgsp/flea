@@ -560,6 +560,19 @@ mkdir -p "$SELFDEL"
 out=$(watch_run "$SELFDEL" rmdir "$SELFDEL")
 check_changed "deleting the watched directory answers a changed line, from the watch's own removal" "$out" 1 3
 
+# A list that fails leaves the pane on the directory it was already showing, and that directory keeps
+# the watch it already had. Arming the new watch in place of it instead of beside it reddens here,
+# because the failed attempt then hands the listed directory a descriptor its own events do not carry.
+out=$( ( printf '{"c":"list","path":"%s","first":10}\n' "$WT"
+         sleep 0.4
+         printf '{"c":"list","path":"/no/such/directory","first":10}\n'
+         sleep 0.4
+         touch "$WT/after-a-failed-list.txt"
+         sleep 0.6
+         printf '{"c":"quit"}\n' ) | $BIN --backend)
+check "a failed list still answers its error" "1" "$(echo "$out" | grep -c '"t":"error"')"
+check_changed "and the directory still on screen is still watched after it" "$out" 1 3
+
 # A burst is coalesced by the reader, so a hundred creates cost a handful of lines, not a hundred.
 out=$(watch_run "$WT" burst_of_creates)
 check_changed "a hundred creates answer a handful of changed lines, not a hundred" "$out" 1 10

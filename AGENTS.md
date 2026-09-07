@@ -142,7 +142,11 @@ watch on the directory being listed, armed by `list` BEFORE the scan and dropped
 `listpaths`, whose listings are not directories. Arming after the scan lost every change the scan
 itself raced, a hole the width of one readdir: reproduced on the 100,000 file fixture, where a
 create during the scan answered no `changed` line at all and the same create a second later
-answered one. A `list` that fails to scan puts the watch back on the directory still on screen.
+answered one. The new watch is armed BESIDE the current one rather than in place of it, so a scan
+that fails costs the directory still on screen nothing: `commit` drops the old watch only once the
+new listing replaced it, and `abandon` drops the new one when the scan failed. Replacing it up front
+was the first fix and it was wrong, because a failed list then handed the open directory a new
+descriptor and `is_current` dropped anything still carrying the old one.
 Its reader thread sends the loop an `Event::Changed(wd)`, and the loop answers
 `{"t":"changed","path":"<the directory>"}` and changes nothing else: the rows, the count and
 the sort order stay exactly what they were, because the client is the only thing that knows whether
@@ -162,8 +166,10 @@ case is one full re-scan per 400 ms while something is actively rewriting the fo
 looking at, which is 25 to 38 ms of that on the 100,000 file fixture.
 **The test for this has to sample while the writing is still going**, which is what makes it a
 test: measured after the writer stops, a restarted timer and an absorbing one both show a re-read
-and the check passes either way. `tests/ui.sh watch` reads the count 1.2 s into a background writer
-and gets 27 rows against a restarting timer's 6.
+and the check passes either way. `tests/ui.sh watch` samples once inside a background writer's run
+and requires the count to have moved; under `restart()` it does not move at all. No number is
+quoted here on purpose, because each `omarchy-drive ipc` round trip costs 190 to 565 ms and the
+sample therefore lands later than the sleep in front of it says.
 
 **A re-read is a fresh `list`, so it renumbers every row, and that is what the anchor is for.**
 `ui/js/Nav.js`'s `refreshWatched` records the NAME under the cursor before the re-read and

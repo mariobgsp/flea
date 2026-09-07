@@ -82,7 +82,7 @@ function decodePath(raw) {
 // a port the scheme would have used anyway dropped, because gio's own listing never reports one.
 function normalize(uri) {
     var stripped = Protocols.stripDefaultPort(String(uri || "").replace(/\/+$/, ""))
-    var bareRoot = /^[a-z][a-z0-9+.-]*:\/\/[^\/]+$/i.test(stripped)
+    var bareRoot = /^[a-z][a-z0-9+.-]*:\/\/[^/]+$/i.test(stripped)
     return bareRoot ? stripped + "/" : stripped
 }
 
@@ -96,7 +96,7 @@ function railLabel(mount, marks) {
 }
 
 // Sample input, captured live on the box with a USB stick plugged in (2026-09-02), from
-// lsblk --json -o NAME,LABEL,MOUNTPOINT,RM,HOTPLUG,TRAN,SUBSYSTEMS,SIZE,TYPE,MODEL:
+// lsblk --json -o NAME,LABEL,MOUNTPOINT,RM,TRAN,SUBSYSTEMS,SIZE,TYPE,MODEL:
 // {"blockdevices":[
 //   {"name":"sda","label":null,"mountpoint":null,"rm":true,"size":"116.1G","type":"disk","model":"USB Flash Disk",
 //    "children":[{"name":"sda1","label":"128GB","mountpoint":"/run/media/gm/128GB","rm":true,"size":"116.1G","type":"part","model":null}]}]}
@@ -121,7 +121,7 @@ function parseDevices(body) {
 
 // corner: one internal disk on this box, so the first non-external disk is "the" disk and its row means "/".
 // Externality is isExternal's, not RM's alone: USB bridges (a WD My Passport reports rm=false,
-// hotplug=true, tran=usb) must never win the internal row.
+// tran=usb) must never win the internal row.
 function internalDisk(nodes) {
     for (var i = 0; i < nodes.length; i++) {
         var n = nodes[i]
@@ -136,13 +136,14 @@ function internalDisk(nodes) {
     return null
 }
 
-// A node is external when any transport says so. RM alone misses USB bridges: a WD My Passport
-// reports rm=false with hotplug=true, tran=usb, subsystems=block:scsi:usb:pci, while its partition
-// carries tran=null, so collectVolumes inherits the parent's answer the way it inherits the model.
+// A node is external when removable or USB-attached. RM alone misses USB bridges: a WD My Passport
+// reports rm=false with tran=usb over subsystems=block:scsi:usb:pci, while its partition carries
+// tran=null, so collectVolumes inherits the parent's answer the way it inherits the model.
+// Bare hotplug is deliberately no signal: hot-swap SATA and eSATA internals report it too.
 function isExternal(n) {
     if (!n)
         return false
-    if (n.rm || n.hotplug)
+    if (n.rm)
         return true
     if (String(n.tran || "").toLowerCase() === "usb")
         return true

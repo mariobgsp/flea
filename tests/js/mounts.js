@@ -80,11 +80,11 @@ function run(check) {
     check("a loop device is not a device row", d.map(function (e) { return e.label }).join(","), "nvme0n1,128GB")
 
     // A USB bridge that reports rm=false: a WD My Passport (rm=false, hotplug=true, tran=usb,
-    // subsystems=block:scsi:usb:pci) whose partition carries tran=null. RM alone would hide the
-    // volume and crown the USB disk the internal one.
+    // subsystems=block:scsi:usb:pci) whose partition carries tran=null and no direct external
+    // signal of its own, so its row proves the parent's answer is inherited.
     var bridge = '{"blockdevices":['
                + '{"name":"sda","label":null,"mountpoint":null,"rm":false,"hotplug":true,"tran":"usb","subsystems":"block:scsi:usb:pci","size":"931.5G","type":"disk","model":"WDC WD10JMVW-11AJGS4",'
-               + '"children":[{"name":"sda1","label":"Hardsk Ario","mountpoint":"/mnt/Hardsk-Ario","rm":false,"hotplug":true,"tran":null,"subsystems":"block:scsi:usb:pci","size":"931.5G","type":"part","model":null}]},'
+               + '"children":[{"name":"sda1","label":"Hardsk Ario","mountpoint":"/mnt/Hardsk-Ario","rm":false,"hotplug":false,"tran":null,"subsystems":"block:scsi:pci","size":"931.5G","type":"part","model":null}]},'
                + '{"name":"nvme0n1","label":null,"mountpoint":null,"rm":false,"hotplug":false,"tran":"nvme","subsystems":"block:nvme:pci","size":"476.9G","type":"disk","model":"SKHynix_HFS512GEJ9X164N"}'
                + ']}'
     var b = Mounts.parseDevices(bridge)

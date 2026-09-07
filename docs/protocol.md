@@ -903,8 +903,9 @@ The mechanism is one inotify watch on that one directory, non-recursive, with th
 which is exactly the set of events that changes what a listing says: which names are in it, and the
 size, date and mode its columns draw. Deleting the watched directory needs no bit of its own: the
 kernel removes the watch along with it and reports that removal whatever the mask holds.
-**A file growing under an open handle is not one of them.** `IN_MODIFY` fires on every `write(2)` and a listing does not draw a partial size, so
-a row's size follows the writer closing the file rather than the writer writing to it.
+**A file growing under an open handle is not one of them.** `IN_MODIFY` fires on every `write(2)`
+and a listing does not draw a partial size, so a row's size follows the writer closing the file
+rather than the writer writing to it.
 
 **One burst is one line.** The event payload is read only far enough to name its watch descriptor,
 never for which file moved, and the reader then pauses 100 ms before reading again, so a directory

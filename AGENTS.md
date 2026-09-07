@@ -160,6 +160,10 @@ first `changed` after idle and lets later ones land inside it rather than restar
 would mean a directory under continuous writing never settled and so never refreshed at all. Worst
 case is one full re-scan per 400 ms while something is actively rewriting the folder the user is
 looking at, which is 25 to 38 ms of that on the 100,000 file fixture.
+**The test for this has to sample while the writing is still going**, which is what makes it a
+test: measured after the writer stops, a restarted timer and an absorbing one both show a re-read
+and the check passes either way. `tests/ui.sh watch` reads the count 1.2 s into a background writer
+and gets 27 rows against a restarting timer's 6.
 
 **A re-read is a fresh `list`, so it renumbers every row, and that is what the anchor is for.**
 `ui/js/Nav.js`'s `refreshWatched` records the NAME under the cursor before the re-read and
@@ -177,7 +181,12 @@ wrong ones, so `PaneWire`'s `watchBusy` defers the re-read while a selection sta
 while a rename editor is open, the context menu is up, a filter is being typed, a search listing is
 showing or a list is already in flight. The debt is kept, not dropped: `onWatchBusyChanged` pays it
 the moment the last of those clears. A user holding a selection therefore sees the same stale
-listing 0.1.4 always showed, for as long as they hold it.
+listing 0.1.4 always showed, for as long as they hold it. **The debt does not travel**: leaving the
+directory clears it, because the pane's own `onPathChanged` fires before the navigation clears the
+selection that was holding it, and without that a change in the folder being left was paid for by a
+full re-list of the folder being opened. `ui/Backend.qml`'s `listRequests` counter is what makes
+that assertable, the same idiom as `thumbRequests` and `dirSizeRequests`: `tests/ui.sh watch` counts
+from before the navigation and requires exactly one listing for it.
 
 **// corner: this is the local kernel's view of one directory.** A change another machine makes to an
 NFS or SMB share raises no inotify event here, so a network mount is exactly as live as it was

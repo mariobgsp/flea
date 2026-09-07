@@ -1301,7 +1301,9 @@ case_click() {
     printf 'alpha\n' > "$dir/alpha.txt"
     printf 'beta\n' > "$dir/beta.txt"
     printf 'gamma\n' > "$dir/gamma.txt"
-    local opened="$dir/opened.log"
+    # Outside the directory under test on purpose: the stub appends to it on every open, and a write
+    # inside the listed folder is an outside change that re-reads it under the clicks below.
+    local opened="$fixture_root/click-opened.log"
     : > "$opened"
     # Only the open subcommand is intercepted, so stubbing the opener leaves the gio mount calls
     # ui/NetworkMounts.qml makes on every launch answering from the real gio. That name is the mount
@@ -1317,8 +1319,8 @@ case_click() {
     export PATH="$dir/bin:$PATH"
     launch "$dir"
     export PATH="$saved_path"
-    # Measured row order: bin, subdir, alpha.txt, beta.txt, gamma.txt, opened.log.
-    wait_listing 6
+    # Measured row order: bin, subdir, alpha.txt, beta.txt, gamma.txt.
+    wait_listing 5
     local alpha=2
 
     # The list view. One tap selects the row and opens nothing at all.
@@ -1361,7 +1363,7 @@ case_click() {
 
     # A plain click replaces the selection, so the next shift+click extends from the row the cursor
     # is visibly on and a write operation cannot reach rows the user thinks they dropped.
-    click_row 5 left
+    click_row 4 left
     settle
     [[ "$(ipc selectionCount)" == "0" ]] \
         || fail "click: a plain click left $(ipc selectionCount) rows selected, so the selection is stale"
@@ -1382,7 +1384,7 @@ case_click() {
     wait_path "$dir/subdir"
     key -k BackSpace >/dev/null
     wait_path "$dir"
-    wait_listing 6
+    wait_listing 5
 
     # The grid, a different delegate in a different file carrying the same contract.
     click_chrome grid

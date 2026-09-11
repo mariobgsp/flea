@@ -31,6 +31,7 @@ Item {
 
     // A new document starts at its first page, whatever page the last one was left on.
     onPathChanged: root.page = 0
+    onPageCountChanged: if (root.pageCount > 0) root.page = Math.min(root.page, root.pageCount - 1)
 
     function turn(delta) {
         if (root.pageCount <= 0)
@@ -43,6 +44,17 @@ Item {
         // Format.fileUri, not a concatenation: a path can carry a # or a ? and either one truncates
         // a hand-built URI at that character. A document is only opened while the column shows one.
         source: root.active && root.path.length > 0 ? Format.fileUri(root.path) : ""
+    }
+
+    // The page's own paper under the raster: on this box a rendered page can arrive with text drawn
+    // and no background, and the dark frame showed through it. Paper is the document's, not a theme
+    // role, so the colour is a constant; visible only with the page, so a loading document draws none.
+    Rectangle {
+        anchors.centerIn: parent
+        visible: page.visible
+        width: page.width
+        height: page.height
+        color: "#ffffff"
     }
 
     // The page is the only light surface in the app, which is exactly what the canvas draws.

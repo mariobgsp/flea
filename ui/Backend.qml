@@ -10,6 +10,10 @@ Item {
     // the dropped-on folder's own to tell a move within one volume from a copy across two.
     property var dirDev: 0
     signal rows(int start, var items, real ms, var kinds)
+    property real firstRowsAt: 0
+    onRows: function(start, items, ms, kinds) {
+        if (root.firstRowsAt === 0 && items.length > 0) root.firstRowsAt = Date.now()
+    }
     // mode rides only on a denied listing, the one failure a pane draws more than a sentence for.
     signal failed(string where, string input, string message, int mode)
     signal thumbed(int row, string file)
@@ -20,29 +24,46 @@ Item {
     signal transferStarted(int id, int n, bool moving)
     signal transferProgress(int id, int index, string name, real bytes, real total)
     signal transferItem(int id, int index, string name, bool ok, string err)
-    signal transferDone(int id, int ok, int failed, int skipped, bool cancelled)
+    signal transferDone(int id, int ok, int failed, int skipped, bool cancelled, var retryPaths)
     signal trashed(int ok, int failed)
     signal renamed(bool ok, string path)
     signal made(bool ok, string path)
     signal duplicated(bool ok, string path)
     signal undone(string op, bool ok)
     signal paths(var list)
+    signal located(var message)
+    signal trashResult(var message)
+    signal permissionsResult(var message)
+    signal pickerResult(var message)
+    signal menuResult(var message)
+    signal formatsResult(var message)
+    signal redone(string op, bool ok)
+    signal redoStarted(int id, int n, string op)
+    signal metaResult(var message)
+    property int metaToken: 0
     signal meta(int row, int w, int h, real durationMs, int sampleRate, int entries, real unpacked, bool archiveFailed, var names, real lines, bool partial, bool linesFailed, string target, bool targetDir, string owner)
     signal fsInfo(string fs, real free)
+    // The one line no request asked for: the directory the current listing came from changed under
+    // it. path is that directory, so a pane that has since moved can ignore it; see docs/protocol.md.
+    signal changed(string path)
     // readFailed tells a zero-row answer apart from an empty directory; mode is that directory's own, 0 when the stat failed too.
     // hidden is the flag the request carried, echoed by the backend: two clients peek this wire, so path alone does not say whose reply this is.
     signal peeked(string path, bool hidden, int total, var rows, bool readFailed, int mode)
     signal archiveStarted(int id)
     signal archiveDone(int id, bool ok, bool verified, string err)
-    signal convertStarted(int id)
-    signal convertDone(int id, bool ok, string path, string err)
+    signal convertChecked(var message)
+    signal convertStarted(int id, int requestId, string source)
+    signal convertDone(int id, bool ok, string path, string err, int requestId, string source, bool collision)
     // The shell's exit gate: the backend has drained and this process can end.
     signal quitReady()
 
-    // What this box actually offers, probed by the backend at startup and asked for once at launch.
+    // Capabilities arrive at launch and refresh at explicit menu and provider-action entry.
     // The compress submenu is exactly this list, so a box with no 7zip never shows .7z.
     property var archiveFormats: []
     property bool canConvert: false
+    property var extraction: ({archive: false, sevenZip: false})
+    property var providers: ({})
+    property int formatsToken: 0
 
     readonly property bool running: child.running
 
@@ -51,11 +72,24 @@ Item {
     // ui/js/Sort.js records here because it is the one place that knows which keys are accepted.
     property string sortBy: "name"
     property bool sortDesc: false
+    property bool preserveSort: false
+    property bool hasListed: false
+    readonly property string sortPreference: JSON.stringify(ViewState.state.sort || {})
+    onSortPreferenceChanged: if (!root.preserveSort || !root.hasListed) root.resetSort()
+
+    function resetSort() {
+        root.sortBy = (ViewState.state.sort || {}).key || "name"
+        if (root.sortBy === "date") root.sortBy = "mtime"
+        root.sortDesc = (ViewState.state.sort || {}).reverse === true
+    }
 
     // What the settle gate asserts: how many thumb requests this process has attempted; see AGENTS.md.
     property int thumbRequests: 0
     // Same gate, for dirsize: a fling must issue none of these either.
     property int dirSizeRequests: 0
+    // Same idiom again, for the watched re-read: a debt owed by the directory the pane has left must
+    // cost the one it arrived in no listing at all, which only a count can say; see tests/ui.sh watch.
+    property int listRequests: 0
 
     // A write before the child is spawned is dropped silently, so an early request waits here.
     property var pending: []
@@ -79,11 +113,15 @@ Item {
     }
 
     function list(path, first, hidden) {
+        root.listRequests += 1
         // A fresh scan is always name ascending, so every refresh after a write operation puts the
         // header's mark back rather than leaving it describing the order before the refresh.
-        root.sortBy = "name"
-        root.sortDesc = false
-        root.send({ c: "list", path: path, first: first, hidden: hidden })
+        if (!root.preserveSort || !root.hasListed) root.resetSort()
+        root.hasListed = true
+        root.send({ c: "list", path: path, first: first, hidden: hidden,
+                    by: root.sortBy, desc: root.sortDesc,
+                    foldersFirst: ViewState.state.foldersFirst !== false,
+                    groupByKind: ViewState.state.groupByKind === true })
     }
 
     // A listing built from the paths named here, in that order and never sorted; see
@@ -98,7 +136,9 @@ Item {
     }
 
     function sort(by, desc) {
-        root.send({ c: "sort", by: by, desc: desc })
+        root.send({ c: "sort", by: by, desc: desc,
+                    foldersFirst: ViewState.state.foldersFirst !== false,
+                    groupByKind: ViewState.state.groupByKind === true })
     }
 
     // The walk replaces the current listing with its matches, each named relative to path; see docs/protocol.md "search".
@@ -124,19 +164,19 @@ Item {
         root.send({ c: "transfercancel", id: id })
     }
 
-    function trash(rows) {
+    function trash(rows, menuId) {
         if (rows.length === 0) {
             return
         }
-        root.send({ c: "trash", rows: rows })
+        root.send({ c: "trash", rows: rows, menuId: menuId || 0 })
     }
 
-    function rename(path, to) {
-        root.send({ c: "rename", path: path, to: to })
+    function rename(path, to, menuId) {
+        root.send({ c: "rename", path: path, to: to, menuId: menuId || 0 })
     }
 
-    function duplicate(path) {
-        root.send({ c: "duplicate", path: path })
+    function duplicate(path, menuId) {
+        root.send({ c: "duplicate", path: path, menuId: menuId || 0 })
     }
 
     // No name field: omitting it is what makes the backend take the first free "New Folder", so the
@@ -149,6 +189,8 @@ Item {
         root.send({ c: "undo" })
     }
 
+    function redo() { root.send({ c: "redo" }) }
+
     // Resolves indices to absolute paths, so a clipboard can hold a selection wider than the window.
     function askPaths(rows) {
         root.send({ c: "paths", rows: rows })
@@ -158,7 +200,9 @@ Item {
     // media and archive each cost a subprocess in the backend, so each is only ever true for a row
     // whose kind actually names the facts it would answer.
     function askMeta(row, text, media, archive) {
-        root.send({ c: "meta", row: row, text: text, media: media, archive: archive })
+        root.metaToken += 1
+        root.send({ c: "meta", row: row, text: text, media: media, archive: archive, token: root.metaToken })
+        return root.metaToken
     }
 
     function askFsInfo() {
@@ -171,21 +215,23 @@ Item {
     }
 
     function askFormats() {
-        root.send({ c: "formats" })
+        root.send({ c: "formats", id: ++root.formatsToken })
+        return root.formatsToken
     }
 
     // paths are absolute and share a parent, which is what a selection from one listing is.
-    function compress(paths, dest, format) {
-        root.send({ c: "archive", op: "compress", paths: paths, dest: dest, format: format })
+    function compress(paths, dest, format, menuId) {
+        root.send({ c: "archive", op: "compress", paths: paths, dest: dest, format: format, menuId: menuId || 0 })
     }
 
-    function extract(path, dest) {
-        root.send({ c: "archive", op: "extract", path: path, dest: dest })
+    function extract(path, dest, menuId) {
+        root.send({ c: "archive", op: "extract", path: path, dest: dest, menuId: menuId || 0 })
     }
 
     // No format field: magick reads the codec off dest's own extension, see docs/protocol.md "convert".
-    function convertImage(path, dest, strip) {
-        root.send({ c: "convert", path: path, dest: dest, strip: strip })
+    function convertImage(path, dest, strip, menuId, requestId, check) {
+        root.send({ c: "convert", path: path, dest: dest, strip: strip, menuId: menuId || 0,
+                    requestId: requestId || 0, check: check === true })
     }
 
     function thumb(rows) {
@@ -238,6 +284,7 @@ Item {
     // Sample input: {"t":"rows","start":0,"rows":[{"n":"a.txt","d":false,"s":3,"m":1787790423,"p":33188,"i":"text-x-generic","t":false,"k":0}],"kinds":["Plain text document"],"ms":1.250}
     // Sample input: {"t":"thumbed","row":2,"file":"/home/gm/.cache/thumbnails/large/b98fa4.png","ms":75.823}
     // Sample input: {"t":"dirsized","row":4,"bytes":1048576,"partial":false,"ms":12.500}
+    // Sample input: {"t":"changed","path":"/home/gm/Downloads"}
     // Sample input: {"t":"searching","n":812,"scanned":41200,"ms":300.114}
     // Sample input: {"t":"transferstarted","id":12,"n":2,"moving":true}
     // Sample input: {"t":"transferprogress","id":12,"index":0,"name":"a.txt","bytes":40000000,"total":120000000}
@@ -280,7 +327,7 @@ Item {
             // err rides only on a failure, so an ok item has no field to read here.
             root.transferItem(message.id, message.index, message.name, message.ok, message.err || "")
         } else if (message.t === "transferdone") {
-            root.transferDone(message.id, message.ok, message.failed, message.skipped, message.cancelled)
+            root.transferDone(message.id, message.ok, message.failed, message.skipped, message.cancelled, message.retryPaths || [])
         } else if (message.t === "trashed") {
             root.trashed(message.ok, message.failed)
         } else if (message.t === "renamed") {
@@ -291,25 +338,48 @@ Item {
             root.duplicated(message.ok, message.path)
         } else if (message.t === "undone") {
             root.undone(message.op, message.ok)
+        } else if (message.t === "redone") {
+            root.redone(message.op, message.ok)
+        } else if (message.t === "redostarted") {
+            root.redoStarted(message.id, message.n, message.op)
         } else if (message.t === "paths") {
             root.paths(message.paths || [])
+        } else if (message.t === "located") {
+            root.located(message)
+        } else if (message.t === "trashbrowse") {
+            root.trashResult(message)
+        } else if (message.t === "permissions") {
+            root.permissionsResult(message)
+        } else if (message.t === "picker") {
+            root.pickerResult(message)
+        } else if (message.t === "menuaction") {
+            root.menuResult(message)
         } else if (message.t === "meta") {
+            root.metaResult(message)
             root.meta(message.row, message.w, message.h, message.ms, message.rate, message.entries, message.unpacked, message.afailed, message.names, message.lines, message.partial, message.lfailed === true, message.target, message.targetdir, message.owner || "")
         } else if (message.t === "fsinfo") {
             root.fsInfo(message.fs, message.free)
+        } else if (message.t === "changed") {
+            root.changed(message.path || "")
         } else if (message.t === "peeked") {
             root.peeked(message.path, message.hidden === true, message.n, message.rows || [], message.failed === true, message.mode || 0)
         } else if (message.t === "formats") {
             root.archiveFormats = message.archive || []
             root.canConvert = message.convert === true
+            root.extraction = message.extract || ({archive: false, sevenZip: false})
+            root.providers = message.providers || ({})
+            root.formatsResult(message)
         } else if (message.t === "archivestarted") {
             root.archiveStarted(message.id)
         } else if (message.t === "archivedone") {
             root.archiveDone(message.id, message.ok, message.verified !== false, message.err || "")
+        } else if (message.t === "convertchecked") {
+            root.convertChecked(message)
         } else if (message.t === "convertstarted") {
-            root.convertStarted(message.id)
+            root.convertStarted(message.id, message.requestId || 0, message.source || "")
         } else if (message.t === "convertdone") {
-            root.convertDone(message.id, message.ok, message.path || "", message.err || "")
+            root.convertDone(message.id, message.ok, message.path || "", message.err || "", message.requestId || 0,
+                             message.source || "", message.collision === true)
         }
     }
 

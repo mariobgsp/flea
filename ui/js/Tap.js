@@ -13,6 +13,7 @@
 
 // The listing: the list view, the grid view, and the columns view's own middle column.
 function tapped(index, tapCount, modifiers, root) {
+    if (index < 0) return
     // Finder's two selection modifiers. Neither ever opens, and only the first tap of one counts,
     // so a modified double click selects once instead of toggling itself back off.
     if (modifiers & Qt.ControlModifier) {
@@ -29,8 +30,7 @@ function tapped(index, tapCount, modifiers, root) {
     // The plain tap replaces the selection with this row, Finder's rule: leaving the old one
     // standing would extend the next shift+click from an anchor nothing on screen names, and every
     // write operation targets the selection ahead of the cursor row.
-    root.clearSelection()
-    root.setCursor(index)
+    root.selectOnly(index)
     // What the second tap means is the search's to say, not this file's: on a result the operator's
     // ruling is that it takes you to the file rather than launching it, and ui/js/Search.js
     // activateAction answers "open" everywhere else. It was written for this call and had none.
@@ -56,7 +56,8 @@ function tappedMenu(index, eventPoint, root, menu) {
 // A neighbour column in the columns view is a peek with no cursor of its own, so its rows answer a
 // verb rather than acting. One tap on a directory makes it the pane's listing, which is the column
 // view's own reveal and not an open; only a second tap opens a file. A peeked row belongs to another
-// directory and every menu action addresses the pane's cursor, so a right click there has no menu.
+// directory and every menu action addresses the pane's cursor, so a right click there is routed by
+// ColumnPane to menuOnNeighbour before this is asked.
 function tappedColumn(row, button, tapCount) {
     if (!row || button === Qt.RightButton)
         return ""

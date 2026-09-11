@@ -17,6 +17,7 @@ import "icons.js" as IconsSuite
 import "keymap.js" as KeymapSuite
 import "match.js" as MatchSuite
 import "menu.js" as MenuSuite
+import "openwith.js" as OpenWithSuite
 import "mounts.js" as MountsSuite
 import "nav.js" as NavSuite
 import "network.js" as NetworkSuite
@@ -24,22 +25,29 @@ import "ops.js" as OpsSuite
 import "palette.js" as PaletteSuite
 import "pathbar.js" as PathBarSuite
 import "picker.js" as PickerSuite
+import "previewkeys.js" as PreviewKeysSuite
 import "places.js" as PlacesSuite
 import "protocols.js" as ProtocolsSuite
 import "railkeys.js" as RailKeysSuite
 import "recent.js" as RecentSuite
 import "renderer.js" as RendererSuite
+import "scroll.js" as ScrollSuite
 import "search.js" as SearchSuite
 import "selection.js" as SelectionSuite
 import "settings.js" as SettingsSuite
 import "sort.js" as SortSuite
+import "status.js" as StatusSuite
+import "permissions.js" as PermissionsSuite
+import "trashdates.js" as TrashDatesSuite
 import "taildrop.js" as TaildropSuite
 import "textsize.js" as TextSizeSuite
 import "trash.js" as TrashSuite
 import "tap.js" as TapSuite
+import "marquee.js" as MarqueeSuite
 import "tabs.js" as TabsSuite
 import "thumbs.js" as ThumbsSuite
 import "uistate.js" as UiStateSuite
+import "watch.js" as WatchSuite
 
 Item {
     Component.onCompleted: {
@@ -64,17 +72,19 @@ Item {
             ["format", FormatSuite], ["icons", IconsSuite],
             ["keymap", KeymapSuite], ["match", MatchSuite], ["menu", MenuSuite],
             ["mounts", MountsSuite], ["nav", NavSuite], ["network", NetworkSuite],
-            ["ops", OpsSuite],
+            ["openwith", OpenWithSuite], ["ops", OpsSuite],
             ["palette", PaletteSuite], ["pathbar", PathBarSuite], ["places", PlacesSuite],
             ["picker", PickerSuite],
+            ["previewkeys", PreviewKeysSuite],
             ["protocols", ProtocolsSuite], ["railkeys", RailKeysSuite],
             ["recent", RecentSuite],
             ["renderer", RendererSuite],
-            ["search", SearchSuite],
+            ["scroll", ScrollSuite], ["search", SearchSuite],
             ["selection", SelectionSuite], ["settings", SettingsSuite],
-            ["sort", SortSuite], ["taildrop", TaildropSuite], ["textsize", TextSizeSuite],
-            ["trash", TrashSuite], ["tap", TapSuite], ["tabs", TabsSuite],
-            ["thumbs", ThumbsSuite], ["uistate", UiStateSuite]
+            ["sort", SortSuite], ["trashdates", TrashDatesSuite], ["permissions", PermissionsSuite], ["status", StatusSuite], ["taildrop", TaildropSuite], ["textsize", TextSizeSuite],
+            ["trash", TrashSuite], ["tap", TapSuite], ["marquee", MarqueeSuite], ["tabs", TabsSuite],
+            ["thumbs", ThumbsSuite], ["uistate", UiStateSuite],
+            ["watch", WatchSuite]
         ]
         var argv = Qt.application.arguments
         var only = ""

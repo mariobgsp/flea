@@ -3,9 +3,8 @@
 .import "Filter.js" as Filter
 .import "Format.js" as Format
 
-// Directory tabs in one window. The pane and the backend still hold one listing: a hidden tab is a
-// snapshot, not a second view, because a hidden view is not a free view. t, w and 1-9 are already
-// in keys.toml; this file is what they do. Nine is the cap because those digits are the jump keys.
+// Hidden tabs are snapshots, so the pane and backend still own only one listing.
+// The nine-tab cap matches TUI's direct digit selection; GUI shortcuts cycle through the same state.
 
 var MAX = 9
 
@@ -25,12 +24,15 @@ function snapshot(pane, path) {
     return {
         path: where,
         history: pane.history.slice(),
+        forwardHistory: (pane.forwardHistory || []).slice(),
         cursorIndex: elsewhere ? 0 : pane.cursorIndex,
         viewMode: pane.viewMode,
         showHidden: pane.showHidden,
         selected: elsewhere ? [] : pane.selectedIndices().slice(),
         sortBy: pane.backend.sortBy,
-        sortDesc: pane.backend.sortDesc
+        sortDesc: pane.backend.sortDesc,
+        // The directory's filesystem, so a drop on this tab while another shows decides move against copy.
+        dev: elsewhere ? 0 : pane.backend.dirDev
     }
 }
 
@@ -64,6 +66,13 @@ function pathAt(tabs, index, i, currentPath) {
     if (i === index)
         return currentPath
     return tabs && tabs.items && tabs.items[i] ? tabs.items[i].path : ""
+}
+
+// The tab's filesystem the same way, 0 when unknown, which ui/js/Drag.js verbFor reads as copy.
+function devAt(tabs, index, i, currentDev) {
+    if (i === index)
+        return currentDev
+    return tabs && tabs.items && tabs.items[i] ? Number(tabs.items[i].dev) || 0 : 0
 }
 
 function labels(pane) {
@@ -129,6 +138,7 @@ function restoreSelection(pane, selected) {
 function apply(pane, item) {
     var same = pane.path === item.path && pane.showHidden === item.showHidden
     pane.history = item.history.slice()
+    pane.forwardHistory = (item.forwardHistory || []).slice()
     pane.viewMode = item.viewMode
     pane.showHidden = item.showHidden
     if (same) {
@@ -252,6 +262,12 @@ function closeAt(pane, i) {
 }
 
 function act(action, pane) {
+    if (action === "tabNext" || action === "tabPrevious") {
+        var total = count(pane)
+        var direction = action === "tabNext" ? 1 : -1
+        selectAt(pane, (currentIndex(pane) + total + direction) % total)
+        return
+    }
     if (action === "tabNew") {
         openNew(pane)
         return

@@ -21,7 +21,7 @@ Item {
         root.forceActiveFocus()
     }
 
-    Keys.onTabPressed: root.tabbed(root, false)
+    Keys.onTabPressed: function(event) { root.tabbed(root, (event.modifiers & Qt.ShiftModifier) !== 0) }
     Keys.onBacktabPressed: root.tabbed(root, true)
     Keys.onReturnPressed: root.activated()
     Keys.onEnterPressed: root.activated()
@@ -62,6 +62,7 @@ Item {
 
     TapHandler {
         acceptedButtons: Qt.LeftButton
+        gesturePolicy: TapHandler.ReleaseWithinBounds
         onTapped: root.activated()
     }
 }

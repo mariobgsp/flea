@@ -10,6 +10,7 @@ Item {
     id: root
 
     property string message: ""
+    property bool active: true
     property string listingState: "loading"
     property int total: 0
     // The st_mode of the directory the listing was denied. Zero whenever the backend could not stat
@@ -20,7 +21,7 @@ Item {
     readonly property bool failed: root.locked || root.listingState === "error"
     readonly property string line: Errors.paneLine(root.listingState, root.message, root.lockedMode)
 
-    visible: root.total === 0 && root.line.length > 0 && root.listingState !== "empty"
+    visible: root.active && root.total === 0 && root.line.length > 0 && root.listingState !== "empty"
 
     Column {
         anchors.centerIn: parent
@@ -44,7 +45,7 @@ Item {
             text: root.line
             color: root.locked ? Theme.color.muted : Theme.color.foreground
             font.family: Theme.font.family
-            font.pixelSize: Theme.font.bodySmall
+            font.pixelSize: Theme.font.body
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
             textFormat: Text.PlainText

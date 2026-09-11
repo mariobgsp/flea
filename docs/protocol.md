@@ -13,6 +13,9 @@ escaper in `src/json.rs`, dispatched by `src/backend/run.rs`.
 2. Errors are messages, never exit statuses. `--backend` runs until it reads `quit`
    or stdin closes, and returns exit code 0 either way; every failure is an `error`
    line the client reads off stdout, not a process exit code.
+3. Exactly one line arrives unasked: `changed`, which says the listed directory was
+   altered by another program. It can land between any request and its reply, so a
+   client that counts lines rather than reading their `t` field will misread the wire.
 
 ## Requests
 
@@ -22,12 +25,18 @@ escaper in `src/json.rs`, dispatched by `src/backend/run.rs`.
 
 Example: `{"c":"list","path":"/home/gm","first":350,"hidden":false}`
 
-Scans `path` (phase 1: names and the directory bit only), sorts by name with
-directories first, and answers a `listed` line followed immediately by a `rows` line
+Scans `path` (phase 1: names and the directory bit only), applies ordering, and
+answers a `listed` line followed immediately by a `rows` line
 covering rows `0..first`. A `path` that fails to scan answers a single `error` line
 instead and leaves the previously listed directory in place: a failed `list` cannot
 mix a new `path` with the old listing. A missing `path` defaults to the empty string,
 a missing `first` defaults to `0`.
+
+Optional `by`, `desc`, `foldersFirst`, and `groupByKind` fields use the ordering
+rules described under `sort`. A list with no ordering fields uses name ascending,
+directories first, without kind groups. Unlike an explicit `sort`, a `list` may
+omit `by`. An invalid ordering key refuses the new listing and keeps the previous
+directory and rows.
 
 `hidden` of `false`, or a missing `hidden`, drops every name starting with `.` before
 it ever reaches the listing: the filter runs inside the scan itself, not as a later
@@ -37,6 +46,63 @@ everything else. There is no separate flag to ask for dotfiles without also
 re-scanning: `sort` reorders whichever listing `list` last produced and cannot add or
 remove rows, so changing `hidden` always means a fresh `list`, which is also what
 clears the cursor and selection back to row 0.
+
+### locate
+
+`{"c":"locate","path":"/directory/selected.txt"}`
+
+Returns `{"t":"located","directory":"/directory","path":"/directory/selected.txt","index":42}`
+for a name already in the current listing, or `index:-1` when absent or invalid. This reads only
+the listing's name arena; it does not stat files, resolve symlinks or scan another directory.
+The client must match both `directory` and the requested `path` before using the index, then
+fetch only the viewport containing that row. This is location in the current listing, not proof
+that the filesystem object still exists or has the same identity for a later operation.
+
+`{"c":"locate","paths":["/directory/selected.txt"],"id":7,"menuId":4}` resolves a batch
+in one scan of the name arena. The reply carries `directory`, the request `id`, `ok`, `error`,
+and `matches:[{"path":"/directory/selected.txt","index":42}]`. Missing paths are omitted,
+duplicates produce one match, and results follow listing order. No unrequested path is returned.
+Without `menuId`, this has the same name-only semantics as the single-path form. With `menuId`,
+each matched survivor must still have the device, inode and file type captured by that completed
+permanent deletion. This explicitly requested survivor check stats only matched paths.
+The backend retains one completed deletion's identities for this read-only purpose even after
+`menuaction/close` has expired the mutable selection. An expired restoration identity returns
+`ok:false` and no matches. Clients must also reject replies after navigation, selection changes,
+or replacement of the pending request, and fetch metadata only for the visible window.
+
+### menuaction identity and deletion
+
+`{"c":"menuaction","op":"activate","id":4,"action":"duplicate"}` revalidates the
+selection captured by `snapshot` before the GUI dispatches a selected-item menu action.
+The response echoes `id`, `op`, and `action`, with `ok` and `error`. Only clipboard, Copy Path,
+and compression actions return captured `paths`; other actions do not serialize unused paths.
+The client also rechecks its listing identity and current action eligibility before dispatch.
+
+An optional `menuId` on `transfer`, `trash`, `duplicate`, `rename`, `archive`, or `convert`
+binds that operation to the captured selection. An expired selection, replacement object,
+or uncaptured requested source is refused. Transfer uses the captured sources directly;
+Trash, Duplicate, Archive, and Convert require the entire requested source set to match.
+Identity checks compare the device, inode and file type at the worker boundary; Trash checks again immediately before its existing GIO
+batch handoff. These checks do not make subsequent external-helper filesystem operations
+atomic. Omitting `menuId` preserves the existing keyboard and protocol entry paths.
+
+`{"c":"menuaction","op":"snapshot","id":4,"rows":[0,2]}` captures the selected identities
+from the active listing. `prepareDelete` with that `id` reviews the captured trees and returns a
+fresh `token`, selected `count`, and total `bytes`. `checkDelete` with the `id` and `token` returns
+`valid` without mutating files. A changed set requires `refreshDelete`: it reviews only the same
+captured paths, drops missing paths, captures replacement identities, and issues a fresh token.
+Unrelated paths cannot widen that confirmation. The client shows this new confirmation with
+Cancel initially focused; no prior destructive activation authorizes the replacement token.
+
+`{"c":"menuaction","op":"delete","id":4,"token":12}` consumes that exact token and reserves
+the ordinary mutation slot. A failed preflight returns `stale:true` and requires a fresh review;
+it does not delete any item. A completed attempt returns `deleted`, `failed`, `cancelled`,
+`error`, and `remaining` absolute paths whose original identities survive. Results report partial
+completion rather than implying rollback. The caller can use the identity-checked batched
+`locate` form to select survivors after refreshing the listing.
+`close` expires the token and cancels pending work. An already claimed deletion root completes
+or restores its survivors before cancellation stops the next root. The undo journal does not
+cover permanent deletion.
 
 ### listpaths
 
@@ -79,30 +145,41 @@ default to `0`.
 
 ### sort
 
-`{"c":"sort","by":"<string>","desc":<bool>}`
+`{"c":"sort","by":"<string>","desc":<bool>,"foldersFirst":<bool>,"groupByKind":<bool>}`
 
 Example: `{"c":"sort","by":"size","desc":true}`
 
-Re-sorts the current listing by `by` and answers a `listed` line. `by` is one of three keys,
-and directories come first under every one of them, in both directions:
+Re-sorts the current listing by `by` and answers a `listed` line. The four orders are:
 
 - `"name"` works on phase-1 data alone: `read` is `0.0` and `sort` is the sort.
 - `"size"` and `"mtime"` pay the metadata pass first, one `lstat` per row of the whole
   listing split across the cores, then sort. `read` is that pass in milliseconds and `sort`
   is the sort, so the two costs stay readable apart on the wire.
+- `"kind"` compares MIME type strings obtained from filenames, with
+  `application/octet-stream` for an unknown name and `inode/directory` for a folder.
+  It does not read file contents or run a metadata pass; `read` is `0.0`.
 
-Inside each group the key decides and the name order breaks ties, so two equal sizes list
-the same way every run, and `desc` is the exact reverse of ascending inside the group,
+`foldersFirst` defaults to `true`: folders remain before files in both directions.
+With `foldersFirst:false`, the key orders folders and files together. `groupByKind`
+defaults to `false`; when true it takes precedence over `foldersFirst` and fixes
+three groups in this order: folders, images (MIME type starts with `image/`), then
+all remaining files. Groups do not reverse with `desc`. Kind grouping uses filename
+MIME lookup, not content probing.
+
+Inside each group, or across the whole listing when ungrouped, the key decides and
+the name order breaks ties, so two equal sizes list the same way every run, and
+`desc` is the exact reverse of ascending inside the group,
 tie-break included. A size order lists directories by name, because a directory's `st_size`
 is not a size anyone means; an mtime order lists them by time like everything else. The stat
 is the same `lstat` that `rows` reports `s` and `m` from, so the order always agrees with the
 column, symlinks included, and a row that vanished between the listing and the pass sorts as
 the zeroes `rows` would send for it.
 
-**Nothing is cached between requests.** Reversing a size order stats the directory again,
-because a listing in name order, which is the order every listing starts in and the one the
-field measures, must not carry 16 bytes a row it is not using. The stats live for the one
-request: on the 100,000 file fixture the backend's PSS read 4781 kB after the listing and
+**Sort metadata is not retained between requests.** Reversing a size order stats the directory again,
+because a listing in name order must not carry metadata it is not using. The stats
+live for one request. Historical measurements from 2026-09-02, using the default
+name ordering and directory grouping: on the 100,000 file fixture the backend's PSS
+read 4781 kB after the listing and
 4945 kB after a size sort (one `smaps_rollup` reading each), with a transient peak 3.2 MB
 above that while the pass ran. Measured on that fixture, warm, on 2026-09-02, from the
 `read` and `sort` fields of the `listed` line: the pass took 25 to 38 ms on twelve cores and
@@ -110,20 +187,19 @@ above that while the pass ran. Measured on that fixture, warm, on 2026-09-02, fr
 5 ms for name; on a three-row directory the whole request stayed under half a millisecond.
 Cold is IO-bound, and the KB measured the same pass at about 1 s serial and 0.3 s on twelve
 threads. The pass runs inside the loop, so a size or date sort of a very large directory on
-a slow mount stalls every other request for its duration: it is the one request whose cost
-scales with the whole directory rather than the viewport, and a client only ever sends it
-for a click.
+a slow mount stalls other backend requests for its duration. An initial `list`
+explicitly requesting one of those orders pays that same metadata pass.
 
-**Any other `by`, a missing one included, answers an `error` line naming the key it refused**,
-never a `listed` line in name order: a client that
-draws its sort mark from the key it sent would otherwise show "Kind" over a name-ordered
-listing, and a descending sort would be silently undone under it. A refused `sort` changes
-nothing; the listing keeps the order it had. `sort` never emits a `rows` line on its own;
+**An unsupported, empty, missing, or non-string `by` answers an `error` line**,
+never a `listed` line in name order. The error names the supplied string key, or an
+empty key when no string was supplied. This prevents a refused request from silently
+resetting the existing order. A refused `sort` leaves the listing in its existing
+order. `sort` never emits a `rows` line on its own;
 follow it with `window` to see the reordered rows. A missing `desc` defaults to `false`.
 
-The key names the stat field the order reads, not the column's label: the wire says `mtime`,
-the same field `rows` carries as `m`, and a client that labels that column "Date Modified"
-translates at its own edge and sends `mtime`.
+`mtime` names the same stat field that `rows` carries as `m`; the GUI labels it
+"Date Modified". `date` is also accepted as an alias for `mtime`, matching the saved
+Settings value. `mode` is not a supported sort key.
 
 ### search
 
@@ -523,8 +599,9 @@ Example: `{"t":"listed","n":100000,"read":26.400,"sort":2.500,"v":56}`
 
 `n` is the row count. `read` and `sort` are milliseconds, formatted to three decimal
 places (`{:.3}`). Sent after a successful `list` and after a successful `sort`. `read` is
-the scan after `list`, the metadata pass after a `sort` by `size` or `mtime`, and `0.0`
-after a `sort` by `name`, which reads nothing.
+the scan plus any requested metadata pass after `list`, the metadata pass after a
+`sort` by `size` or `mtime` (including its `date` alias), and `0.0` after a `sort` by
+`name` or `kind`, which needs no metadata pass.
 
 `v` is the listing directory's own filesystem id, sent once here rather than on every row because
 every file in the directory shares it. A client compares it against the `v` of the directory row
@@ -873,6 +950,52 @@ Example: `{"t":"undone","op":"move","ok":true}`
 
 `op` is the kind of operation that was reversed, one of `rename`, `duplicate`, `mkdir`, `trash`, `copy`
 or `move`, which is what lets the status bar say what it just put back.
+
+### changed
+
+`{"t":"changed","path":"<string>"}`
+
+Example: `{"t":"changed","path":"/home/gm/Downloads"}`
+
+**The one line no request asks for.** Every other response answers a request; this one says the
+directory the current listing came from is no longer what `list` answered with, because another
+program created, deleted, renamed, wrote or chmod'd something in it. Nothing the backend holds
+changes with it: the rows, the count and the sort order are exactly what they were, and a client
+that wants the new directory sends `list` again. `path` is the watched directory, so a client that
+has navigated since the notification was written can tell it is not about the folder it is on now,
+and drop it.
+
+A `list` starts watching its path **before it reads the directory**, not after, because a change
+landing while the read runs is missing from the rows that `list` is about to answer with and is
+therefore exactly the change the client has to be told about. It is armed **beside** the watch the
+client is already on rather than in place of it, so a `list` that then fails to scan costs the
+directory still listed nothing at all: its watch was never removed, and the descriptor its own
+events carry is still the current one. `search` and `listpaths` both stop watching, because a set of
+matches and a set of named paths are not directories.
+
+The mechanism is one inotify watch on that one directory, non-recursive, with the mask
+`IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_MOVE_SELF`,
+which is exactly the set of events that changes what a listing says: which names are in it, and the
+size, date and mode its columns draw. Deleting the watched directory needs no bit of its own: the
+kernel removes the watch along with it and reports that removal whatever the mask holds.
+**A file growing under an open handle is not one of them.** `IN_MODIFY` fires on every `write(2)`
+and a listing does not draw a partial size, so a row's size follows the writer closing the file
+rather than the writer writing to it.
+
+**One burst is one line.** The event payload is read only far enough to name its watch descriptor,
+never for which file moved, and the reader then pauses 100 ms before reading again, so a directory
+being rewritten costs one `changed` line per 100 ms rather than one per file. Anything the kernel
+drops in that window costs nothing, because every event in a burst says the same thing to a client
+that re-reads the whole directory anyway.
+
+`--backend` on a box whose inotify instance limit is exhausted prints one sentence to stderr at
+startup and then never sends this line, and a `list` whose directory the kernel refuses a watch on
+(`max_user_watches`, most often) prints one naming that directory; every other request answers
+exactly as before. A client must therefore treat a live listing as an improvement it may not get,
+not as a guarantee. A
+network mount is the other case: inotify sees the local kernel's own view of a directory, so a
+change another machine makes to an NFS or SMB share is not delivered, and Flea is stale there in
+exactly the way it was before this line existed.
 
 ### error
 
